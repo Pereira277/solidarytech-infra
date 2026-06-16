@@ -1,0 +1,15 @@
+# Real values — reference terraform.tfvars.example instead
+terraform.tfvars
+
+# Provider plugins — large binaries, recreated by terraform init
+**/.terraform/
+
+# Local state files for the permanent bootstrap layers
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Binary plan artifacts
+plan.out
+
+# .terraform.lock.hcl is intentionally not listed here: it must be committed to pin provider versions
