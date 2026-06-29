@@ -175,4 +175,74 @@ terraform destroy
 
 ---
 
-_Seções adicionais serão acrescentadas conforme cada componente for criado (Etapas 2–9)._
+## 8. Pipelines CI/CD — fluxo build → scan → push ECR → update GitOps
+
+Cada repositório de microsserviço (`solidarytech-ngo`, `solidarytech-donation`, `solidarytech-volunteer`) tem um pipeline GitHub Actions em `.github/workflows/ci-cd.yml` com 4 estágios em série:
+
+### Estágio 1 — build-and-test
+
+| Serviço | Ação |
+|---|---|
+| donation-service (Go) | `go mod download` → `go build ./...` |
+| ngo-service (Python) | `pip install -r requirements.txt` → `python -m py_compile app.py` |
+| volunteer-service (Python) | `pip install -r requirements.txt` → `python -m py_compile app.py` |
+
+### Estágio 2 — security-and-lint
+
+| Ferramenta | Serviços | O que verifica |
+|---|---|---|
+| golangci-lint | donation | Análise estática Go (múltiplos linters) |
+| gosec | donation | Vulnerabilidades de segurança Go (SAST) |
+| flake8 | ngo, volunteer | Estilo e erros Python (max-line-length=120) |
+| bandit | ngo, volunteer | Vulnerabilidades de segurança Python (SAST) |
+| Trivy (filesystem) | todos | CVEs críticos em dependências (SCA); exit-code 1 se CRITICAL |
+
+### Estágio 3 — docker-build-and-scan
+
+1. Autentica no ECR via `aws-actions/configure-aws-credentials` + `amazon-ecr-login`
+2. Constrói a imagem com tag `github.sha` (nunca `latest` como única tag)
+3. Trivy varre a imagem (container scan) — bloqueia push se CRITICAL
+4. Faz push para o ECR apenas se o scan passar
+
+### Estágio 4 — update-gitops
+
+1. Faz checkout do repo `Pereira277/solidarytech-infra` usando `GITOPS_PAT`
+2. Substitui a tag da imagem no Deployment YAML via `sed`
+3. Commit e push — o ArgoCD detecta a mudança e reconcilia
+
+### Secrets necessários em cada repo de microsserviço
+
+```
+AWS_ACCESS_KEY_ID       — credencial AWS Academy
+AWS_SECRET_ACCESS_KEY   — credencial AWS Academy
+AWS_SESSION_TOKEN       — obrigatório no AWS Academy (expira em ~4h)
+GITOPS_PAT              — Personal Access Token com acesso de escrita ao solidarytech-infra
+```
+
+### Como verificar que a pipeline funcionou
+
+```bash
+# Ver imagens no ECR (após pipeline concluir):
+aws ecr list-images --repository-name solidarytech-donation --region us-east-1
+aws ecr list-images --repository-name solidarytech-ngo      --region us-east-1
+aws ecr list-images --repository-name solidarytech-volunteer --region us-east-1
+
+# Verificar que o deployment YAML foi atualizado no repo gitops:
+cd solidarytech-infra
+git log --oneline gitops/donation-service/donation-deployment.yaml
+```
+
+### Diagrama do fluxo
+
+```
+push → main
+  └─ build-and-test
+       └─ security-and-lint  (SAST + SCA)
+            └─ docker-build-and-scan  (Trivy container + push ECR)
+                 └─ update-gitops  (sed tag → commit → push)
+                      └─ ArgoCD detecta diff → sync → deploy no EKS
+```
+
+---
+
+_Seções adicionais serão acrescentadas conforme cada componente for criado (Etapas 3–9)._
