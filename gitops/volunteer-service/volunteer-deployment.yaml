@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: volunteer-service
+  namespace: solidarytech
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: volunteer-service
+  template:
+    metadata:
+      labels:
+        app: volunteer-service
+    spec:
+      containers:
+        - name: volunteer-service
+          image: 354132155257.dkr.ecr.us-east-1.amazonaws.com/solidarytech-volunteer:latest
+          ports:
+            - containerPort: 8083
+          env:
+            - name: AWS_DYNAMODB_TABLE
+              valueFrom:
+                secretKeyRef:
+                  name: volunteer-service-secret
+                  key: AWS_DYNAMODB_TABLE
+            - name: AWS_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: volunteer-service-secret
+                  key: AWS_REGION
+            - name: OTEL_SERVICE_NAME
+              value: "volunteer-service"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector-opentelemetry-collector.monitoring.svc.cluster.local:4317"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "deployment.environment=production"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
