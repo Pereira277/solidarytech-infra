@@ -224,7 +224,7 @@ resource "aws_security_group" "eks_cluster" {
 
 resource "aws_security_group" "rds" {
   name        = "${var.project}-rds-sg"
-  description = "RDS PostgreSQL — inbound from private subnets only"
+  description = "RDS PostgreSQL - inbound from private subnets only"
   vpc_id      = aws_vpc.main.id
 
   ingress {
@@ -392,11 +392,11 @@ resource "aws_dynamodb_table" "volunteers" {
   })
 }
 
-# ---------- S3 — Velero DR bucket (us-east-2) ----------
+# ---------- S3 — Velero backup bucket (us-east-1) ----------
+# AWS Academy does not allow s3:CreateBucket in secondary regions via provider alias.
 
 resource "aws_s3_bucket" "velero" {
-  provider = aws.dr
-  bucket   = "${var.project}-velero-${data.aws_caller_identity.current.account_id}"
+  bucket = "${var.project}-velero-${data.aws_caller_identity.current.account_id}"
 
   tags = merge(local.common_tags, {
     Name = "${var.project}-velero"
@@ -404,8 +404,7 @@ resource "aws_s3_bucket" "velero" {
 }
 
 resource "aws_s3_bucket_versioning" "velero" {
-  provider = aws.dr
-  bucket   = aws_s3_bucket.velero.id
+  bucket = aws_s3_bucket.velero.id
 
   versioning_configuration {
     status = "Enabled"
@@ -413,8 +412,7 @@ resource "aws_s3_bucket_versioning" "velero" {
 }
 
 resource "aws_s3_bucket_public_access_block" "velero" {
-  provider = aws.dr
-  bucket   = aws_s3_bucket.velero.id
+  bucket = aws_s3_bucket.velero.id
 
   block_public_acls       = true
   block_public_policy     = true
