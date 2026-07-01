@@ -357,4 +357,122 @@ A `LabRole` na AWS Academy já tem as políticas `AmazonEKSClusterPolicy`, `Amaz
 
 ---
 
-_Seções adicionais serão acrescentadas conforme cada componente for criado (Etapas 4–9)._
+## 10. GitOps e Deploy (Etapa 4) — ArgoCD + Secrets + Banco
+
+### Pré-requisitos
+
+- Credenciais AWS Academy exportadas (seção 4)
+- kubectl apontando para `solidarytech-cluster` (seção 9)
+- `$TF_VAR_ngo_db_password` e `$TF_VAR_donation_db_password` exportados
+
+### 10.1 Instalar ArgoCD
+
+```bash
+kubectl create namespace argocd
+
+kubectl apply -n argocd \
+  -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+# Aguardar todos os pods ficarem Running (leva ~2 min):
+kubectl wait --for=condition=Ready pod --all -n argocd --timeout=300s
+
+kubectl get pods -n argocd
+```
+
+### 10.2 Criar namespace solidarytech e Secrets
+
+```bash
+# Namespace (declarativo — idempotente):
+kubectl apply -f solidarytech-infra/gitops/namespace.yaml
+
+# ngo-service-secret
+kubectl create secret generic ngo-service-secret \
+  --namespace solidarytech \
+  --from-literal=DATABASE_URL="postgresql://solidarytech:${TF_VAR_ngo_db_password}@solidarytech-ngo-db.csxznhqparxp.us-east-1.rds.amazonaws.com:5432/ngodb"
+
+# donation-service-secret
+kubectl create secret generic donation-service-secret \
+  --namespace solidarytech \
+  --from-literal=DATABASE_URL="postgresql://solidarytech:${TF_VAR_donation_db_password}@solidarytech-donation-db.csxznhqparxp.us-east-1.rds.amazonaws.com:5432/donationdb" \
+  --from-literal=AWS_SQS_URL="https://sqs.us-east-1.amazonaws.com/354132155257/solidarytech-donation-events" \
+  --from-literal=AWS_REGION="us-east-1"
+
+# volunteer-service-secret
+kubectl create secret generic volunteer-service-secret \
+  --namespace solidarytech \
+  --from-literal=AWS_DYNAMODB_TABLE="solidarytech-volunteers" \
+  --from-literal=AWS_REGION="us-east-1"
+
+# Verificar:
+kubectl get secrets -n solidarytech
+```
+
+### 10.3 Aplicar ArgoCD Applications
+
+```bash
+kubectl apply -f solidarytech-infra/gitops/argocd/ngo-application.yaml
+kubectl apply -f solidarytech-infra/gitops/argocd/donation-application.yaml
+kubectl apply -f solidarytech-infra/gitops/argocd/volunteer-application.yaml
+
+# Verificar sync status:
+kubectl get applications -n argocd
+```
+
+### 10.4 Inicializar bancos de dados (via pod temporário)
+
+Executar os scripts `db/init.sql` a partir de um pod temporário com acesso à rede interna do cluster:
+
+```bash
+# ngo-db — cria tabela ngos e insere seeds
+kubectl run psql-ngo --rm -i --restart=Never \
+  --namespace=solidarytech \
+  --image=postgres:17 \
+  --env="PGPASSWORD=${TF_VAR_ngo_db_password}" \
+  -- psql -h solidarytech-ngo-db.csxznhqparxp.us-east-1.rds.amazonaws.com \
+         -U solidarytech -d ngodb \
+         -c "$(cat solidarytech-ngo/db/init.sql)"
+
+# donation-db — cria tabela donations
+kubectl run psql-donation --rm -i --restart=Never \
+  --namespace=solidarytech \
+  --image=postgres:17 \
+  --env="PGPASSWORD=${TF_VAR_donation_db_password}" \
+  -- psql -h solidarytech-donation-db.csxznhqparxp.us-east-1.rds.amazonaws.com \
+         -U solidarytech -d donationdb \
+         -c "$(cat solidarytech-donation/db/init.sql)"
+
+# volunteer-service — sem init.sql (DynamoDB já criado pelo Terraform)
+```
+
+### 10.5 Validar deploy
+
+```bash
+# Pods em solidarytech:
+kubectl get pods -n solidarytech
+
+# Services:
+kubectl get svc -n solidarytech
+
+# Verificar logs se pod não estiver Running:
+kubectl logs -n solidarytech <pod-name>
+
+# Verificar eventos se pod estiver em CrashLoopBackOff:
+kubectl describe pod -n solidarytech <pod-name>
+```
+
+### 10.6 Acessar ArgoCD UI (opcional)
+
+```bash
+# Port-forward para UI do ArgoCD:
+kubectl port-forward svc/argocd-server -n argocd 8080:443
+
+# Senha inicial do admin:
+kubectl get secret argocd-initial-admin-secret -n argocd \
+  -o jsonpath="{.data.password}" | base64 -d && echo
+
+# Acesse: https://localhost:8080 (usuário: admin)
+```
+
+---
+
+_Seções adicionais serão acrescentadas conforme cada componente for criado (Etapas 5–9)._
