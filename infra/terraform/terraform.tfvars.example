@@ -5,3 +5,23 @@ aws_region    = "us-east-1"
 aws_region_dr = "us-east-2"
 project       = "solidarytech"
 environment   = "production"
+
+vpc_cidr              = "10.0.0.0/16"
+subnet_public_a_cidr  = "10.0.1.0/24"
+subnet_public_b_cidr  = "10.0.2.0/24"
+subnet_private_a_cidr = "10.0.11.0/24"
+subnet_private_b_cidr = "10.0.12.0/24"
+subnet_db_a_cidr      = "10.0.21.0/24"
+subnet_db_b_cidr      = "10.0.22.0/24"
+
+cluster_name       = "solidarytech-cluster"
+eks_version        = "1.32"
+node_instance_type = "t3.medium"
+
+rds_instance_class   = "db.t3.micro"
+ngo_db_username      = "solidarytech"
+donation_db_username = "solidarytech"
+
+# Sensitive variables — NEVER commit real values. Pass via environment variables:
+#   export TF_VAR_ngo_db_password="<strong-password>"
+#   export TF_VAR_donation_db_password="<strong-password>"

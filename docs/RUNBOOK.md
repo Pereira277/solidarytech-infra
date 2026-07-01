@@ -245,4 +245,116 @@ push → main
 
 ---
 
-_Seções adicionais serão acrescentadas conforme cada componente for criado (Etapas 3–9)._
+## 9. Infraestrutura Principal (Etapa 3) — VPC, EKS, RDS, SQS, DynamoDB, Velero S3
+
+### Recursos provisionados
+
+| Recurso | Identificador | Região |
+|---|---|---|
+| VPC | `solidarytech-vpc` (`10.0.0.0/16`) | us-east-1 |
+| Subnets públicas | `solidarytech-public-a/b` (`10.0.1/2.0/24`) | us-east-1a/b |
+| Subnets privadas | `solidarytech-private-a/b` (`10.0.11/12.0/24`) | us-east-1a/b |
+| Subnets de banco | `solidarytech-db-a/b` (`10.0.21/22.0/24`) | us-east-1a/b |
+| Internet Gateway | `solidarytech-igw` | us-east-1 |
+| NAT Gateway | `solidarytech-nat` (EIP em public-a) | us-east-1 |
+| EKS Cluster | `solidarytech-cluster` (k8s 1.32) | us-east-1 |
+| EKS Node Group | `solidarytech-nodes` (2x t3.medium ON_DEMAND) | us-east-1a/b |
+| RDS PostgreSQL 17 | `solidarytech-ngo-db` / `solidarytech-donation-db` (db.t3.micro) | us-east-1 |
+| SQS Standard | `solidarytech-donation-events` | us-east-1 |
+| DynamoDB | `solidarytech-volunteers` (PAY_PER_REQUEST) | us-east-1 |
+| S3 Velero | `solidarytech-velero-354132155257` (versionado) | us-east-2 |
+
+### Pré-requisitos por sessão
+
+```bash
+# 1. Exportar credenciais AWS Academy (veja seção 4)
+export AWS_ACCESS_KEY_ID="ASIA..."
+export AWS_SECRET_ACCESS_KEY="..."
+export AWS_SESSION_TOKEN="..."
+
+# 2. Definir senhas dos bancos (nunca em arquivo)
+export TF_VAR_ngo_db_password="<senha-forte>"
+export TF_VAR_donation_db_password="<senha-forte>"
+
+# Regras de senha RDS: mínimo 8 chars, sem /, @, espaço
+```
+
+### Subir a infra
+
+```bash
+cd solidarytech-infra/infra/terraform/
+
+terraform init        # re-executa após rotação de credenciais
+terraform validate    # verifica sintaxe
+terraform plan -out=plan.out
+terraform apply plan.out
+
+# Verificar outputs após apply:
+terraform output
+```
+
+### Verificar recursos criados
+
+```bash
+# EKS
+aws eks describe-cluster --name solidarytech-cluster --region us-east-1 \
+  --query 'cluster.status'
+# Esperado: "ACTIVE"
+
+# Nodes
+aws eks list-nodegroups --cluster-name solidarytech-cluster --region us-east-1
+
+# RDS
+aws rds describe-db-instances --region us-east-1 \
+  --query 'DBInstances[*].[DBInstanceIdentifier,DBInstanceStatus]' --output table
+
+# SQS
+aws sqs get-queue-url --queue-name solidarytech-donation-events --region us-east-1
+
+# DynamoDB
+aws dynamodb describe-table --table-name solidarytech-volunteers --region us-east-1 \
+  --query 'Table.TableStatus'
+# Esperado: "ACTIVE"
+
+# S3 Velero (DR)
+aws s3 ls s3://solidarytech-velero-354132155257 --region us-east-2
+```
+
+### Configurar kubectl após apply
+
+```bash
+aws eks update-kubeconfig \
+  --name solidarytech-cluster \
+  --region us-east-1
+
+kubectl get nodes
+# Esperado: 2 nodes em Ready
+```
+
+### Derrubar a infra (fim de sessão)
+
+```bash
+cd solidarytech-infra/infra/terraform/
+
+# Passwords devem estar exportados para o destroy não pedir input:
+export TF_VAR_ngo_db_password="<mesma-senha-usada-no-apply>"
+export TF_VAR_donation_db_password="<mesma-senha-usada-no-apply>"
+
+terraform destroy
+# Confirmar com: yes
+```
+
+> **AVISO:** O bucket S3 do Velero (`solidarytech-velero-*`) em us-east-2 é destruído junto.
+> Isso é intencional — em ambiente Academy com créditos limitados, manter buckets ociosos gera custo.
+
+### Observações de IAM
+
+Em AWS Academy não é possível criar IAM roles. Todos os recursos EKS usam a role `LabRole` pré-existente na conta:
+- `data "aws_iam_role" "eks_cluster_role"` → `LabRole`
+- `data "aws_iam_role" "eks_node_role"` → `LabRole`
+
+A `LabRole` na AWS Academy já tem as políticas `AmazonEKSClusterPolicy`, `AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy` e `AmazonEC2ContainerRegistryReadOnly` anexadas.
+
+---
+
+_Seções adicionais serão acrescentadas conforme cada componente for criado (Etapas 4–9)._
