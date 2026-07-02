@@ -10,17 +10,24 @@ spec:
     chart: loki-stack
     targetRevision: '2.10.2'
     helm:
-      parameters:
-        - name: promtail.enabled
-          value: 'true'
-        - name: grafana.enabled
-          value: 'false'
-        # Prevent loki-stack from creating a datasource ConfigMap that the
-        # kube-prometheus-stack Grafana sidecar would pick up as isDefault:true,
-        # which conflicts with the Prometheus datasource already set as default.
-        # Add Loki datasource manually via Grafana UI (http://loki:3100).
-        - name: grafana.sidecar.datasources.enabled
-          value: 'false'
+      # Use values block (not parameters) so booleans reach the Go template as
+      # real booleans. helm.parameters passes strings — the string "false" is
+      # truthy in Go templates, which is why grafana.sidecar.datasources.enabled
+      # as a parameter did not prevent the datasource ConfigMap from being created.
+      #
+      # loki.isDefault defaults to true in loki-stack values.yaml.
+      # The chart template grafana-datasource.yaml renders:
+      #   isDefault: {{ .Values.loki.isDefault }}
+      # Setting it to false here patches the ConfigMap directly.
+      # The ConfigMap (loki-loki-stack with label grafana_datasource=1) still
+      # exists so Grafana registers Loki as a datasource — it just won't be default.
+      values: |
+        promtail:
+          enabled: true
+        grafana:
+          enabled: false
+        loki:
+          isDefault: false
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: monitoring

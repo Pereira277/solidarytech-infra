@@ -588,23 +588,62 @@ kubectl get prometheus -n monitoring
 **Sintoma:** dashboards mostram _"No data sources found"_ ou _"Datasource was not found"_;
 ou erro _"Only one datasource per organization can be marked as default"_ nos logs do Grafana.
 
-**Causa:** loki-stack criou um ConfigMap de datasource com `isDefault: true` que o sidecar
-do Grafana detectou, conflitando com o datasource do Prometheus (também `isDefault: true`).
+**Causa raiz:** `helm.parameters` no ArgoCD passa valores como strings. O template Go do
+loki-stack avalia `{{ if .Values.grafana.sidecar.datasources.enabled }}` — a string `"false"`
+é truthy, então o ConfigMap é criado mesmo com o parameter definido. Além disso, o default
+do chart em `values.yaml` é `loki.isDefault: true`, que o template injeta diretamente no
+ConfigMap (`isDefault: {{ .Values.loki.isDefault }}`).
 
-**Solução:**
+**Solução aplicada:** o `loki-application.yaml` usa `helm.values` (bloco YAML, não parameters)
+com `loki.isDefault: false` — boolean real, não string. O ConfigMap continua sendo criado
+(Loki registrado como datasource no Grafana), mas com `isDefault: false`.
 
-O loki-application.yaml já tem `grafana.sidecar.datasources.enabled=false` para prevenir
-este conflito. Se o erro ocorrer em um cluster onde o Loki foi aplicado sem esse parâmetro:
+**Se o conflito persistir no cluster atual** (ConfigMap já existe com isDefault:true):
 
 ```bash
-# 1. Deletar o ConfigMap de datasource que o loki-stack criou:
-kubectl delete configmap -n monitoring -l "grafana_datasource=1,app=loki-stack"
+# 1. Forçar sync no ArgoCD para regenerar o ConfigMap com isDefault:false:
+kubectl annotate application loki -n argocd argocd.argoproj.io/refresh=hard
 
-# 2. Reiniciar o Grafana para recarregar os datasources:
+# 2. Verificar o conteúdo do ConfigMap após sync:
+kubectl get configmap -n monitoring loki-loki-stack -o yaml | grep isDefault
+
+# 3. Se ainda estiver true, reiniciar o Grafana para recarregar datasources:
 kubectl rollout restart deployment prometheus-grafana -n monitoring
 
-# 3. Verificar que o Prometheus é o único datasource default:
-#    Grafana UI → Configuration → Data Sources → confirmar ícone "default" apenas no Prometheus
+# 4. Verificar que o Prometheus é o único datasource default:
+#    Grafana UI → Configuration → Data Sources → ícone "default" apenas no Prometheus
+```
+
+**Fallback (se loki.isDefault não funcionar no chart):** criar ConfigMap manual e desabilitar o do chart:
+
+```bash
+# Criar datasource ConfigMap manual com isDefault: false:
+kubectl apply -f - <<'EOF'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-datasource-manual
+  namespace: monitoring
+  labels:
+    grafana_datasource: "1"
+data:
+  loki-datasource.yaml: |
+    apiVersion: 1
+    datasources:
+    - name: Loki
+      type: loki
+      access: proxy
+      url: http://loki:3100
+      isDefault: false
+      version: 1
+EOF
+
+# Deletar o ConfigMap auto-criado pelo chart:
+kubectl delete configmap loki-loki-stack -n monitoring
+
+# Reiniciar Grafana:
+kubectl rollout restart deployment prometheus-grafana -n monitoring
+```
 
 # 4. Adicionar Loki manualmente (se necessário):
 #    Grafana → Configuration → Data Sources → Add → Loki → URL: http://loki:3100
