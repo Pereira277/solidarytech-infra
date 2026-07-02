@@ -10,22 +10,21 @@ spec:
     chart: loki-stack
     targetRevision: '2.10.2'
     helm:
-      # Use values block (not parameters) so booleans reach the Go template as
-      # real booleans. helm.parameters passes strings — the string "false" is
-      # truthy in Go templates, which is why grafana.sidecar.datasources.enabled
-      # as a parameter did not prevent the datasource ConfigMap from being created.
-      #
-      # loki.isDefault defaults to true in loki-stack values.yaml.
-      # The chart template grafana-datasource.yaml renders:
-      #   isDefault: {{ .Values.loki.isDefault }}
-      # Setting it to false here patches the ConfigMap directly.
-      # The ConfigMap (loki-loki-stack with label grafana_datasource=1) still
-      # exists so Grafana registers Loki as a datasource — it just won't be default.
+      # helm.values passes real YAML booleans — helm.parameters passes strings.
+      # The chart template datasources.yaml guards ConfigMap creation with:
+      #   {{- if .Values.grafana.sidecar.datasources.enabled }}
+      # Passing 'false' as a parameter string evaluated to truthy in Go templates;
+      # passing false as a YAML boolean here evaluates to false and skips the block.
+      # Our own ConfigMap (gitops/monitoring/loki-datasource.yaml) takes over
+      # datasource registration with isDefault: false.
       values: |
         promtail:
           enabled: true
         grafana:
           enabled: false
+          sidecar:
+            datasources:
+              enabled: false
         loki:
           isDefault: false
   destination:
