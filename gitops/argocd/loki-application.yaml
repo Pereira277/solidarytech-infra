@@ -10,13 +10,18 @@ spec:
     chart: loki-stack
     targetRevision: '2.10.2'
     helm:
-      # helm.values passes real YAML booleans — helm.parameters passes strings.
-      # The chart template datasources.yaml guards ConfigMap creation with:
-      #   {{- if .Values.grafana.sidecar.datasources.enabled }}
-      # Passing 'false' as a parameter string evaluated to truthy in Go templates;
-      # passing false as a YAML boolean here evaluates to false and skips the block.
-      # Our own ConfigMap (gitops/monitoring/loki-datasource.yaml) takes over
-      # datasource registration with isDefault: false.
+      # The chart's datasources.yaml template (line 12-16):
+      #   {{- if .Values.grafana.sidecar.datasources.label }}
+      #   {{ label }}: {{ labelValue }}
+      #   {{- else }}
+      #   grafana_datasource: "1"
+      #   {{- end }}
+      #
+      # Setting a custom label key causes the chart ConfigMap (loki-loki-stack) to use
+      # loki_ds_disabled: "1" instead of grafana_datasource: "1". The kube-prometheus-stack
+      # Grafana sidecar scans for grafana_datasource: "1" and therefore never discovers this
+      # ConfigMap. Our own ConfigMap (gitops/monitoring/loki-datasource.yaml) retains
+      # grafana_datasource: "1" and registers Loki with isDefault: false.
       values: |
         promtail:
           enabled: true
@@ -24,7 +29,8 @@ spec:
           enabled: false
           sidecar:
             datasources:
-              enabled: false
+              label: "loki_ds_disabled"
+              labelValue: "1"
         loki:
           isDefault: false
   destination:

@@ -588,41 +588,54 @@ kubectl get prometheus -n monitoring
 **Sintoma:** dashboards mostram _"No data sources found"_ ou _"Datasource was not found"_;
 ou erro _"Only one datasource per organization can be marked as default"_ nos logs do Grafana.
 
-**Causa raiz confirmada (via inspeção do chart source):**
+**Causa raiz confirmada (via `helm template` + inspeção de `templates/datasources.yaml`):**
 
-O template `templates/datasources.yaml` do loki-stack 2.10.2:
+O template do loki-stack 2.10.2, linhas críticas:
 ```
-{{- if .Values.grafana.sidecar.datasources.enabled }}
-...
-  isDefault: {{ default false .Values.loki.isDefault }}
+{{- if .Values.grafana.sidecar.datasources.label }}
+{{ label }}: {{ labelValue | quote }}
+{{- else }}
+grafana_datasource: "1"          ← label padrão quando label não definido
+{{- end }}
 ```
 
-- `helm.parameters` passa o valor como **string** `"false"`. Go template avalia `if "false"` como **truthy** → ConfigMap sempre criado, independentemente do valor.
-- `loki.isDefault` padrão no chart é `true`. Tentativas de setar via `parameters` falham pelo mesmo motivo de tipo.
+- `grafana.sidecar.datasources.enabled: false` (boolean via `helm.values`) **deveria** impedir a criação do ConfigMap, mas testes no cluster mostraram que o ArgoCD recria o ConfigMap a cada sync, ignorando o valor boolean no bloco de values.
+- `loki.isDefault: false` também funciona localmente via `helm template`, mas o cluster mantinha `isDefault: true` após hard refresh — problema de sincronização do ArgoCD com o chart Helm.
+- Ambas as abordagens são não-confiáveis porque dependem de boolean false sendo passado corretamente pelo ArgoCD ao Helm.
 
-**Solução definitiva aplicada:**
+**Solução definitiva aplicada — label spoofing:**
 
-1. `loki-application.yaml` usa `helm.values` (bloco YAML com boolean real) e define `grafana.sidecar.datasources.enabled: false` → template `{{- if false }}` pula o bloco → ConfigMap do chart **não é criado**.
-2. `gitops/monitoring/loki-datasource.yaml` — nosso próprio ConfigMap com `isDefault: false`, gerenciado pelo ArgoCD via `monitoring-config` Application.
+O chart **sempre cria** o ConfigMap `loki-loki-stack`. Em vez de impedir a criação (não-confiável), mudamos o label que ele usa:
 
-**Para aplicar no cluster:**
+```
+grafana.sidecar.datasources.label: "loki_ds_disabled"
+```
+
+Resultado via `helm template` (confirmado):
+```
+labels:
+  loki_ds_disabled: "1"   ← não é mais "grafana_datasource: 1"
+```
+
+O Grafana sidecar do kube-prometheus-stack procura `grafana_datasource: "1"` → **não encontra** `loki-loki-stack` → ignora.
+Nosso `gitops/monitoring/loki-datasource.yaml` mantém `grafana_datasource: "1"` e `isDefault: false` → Grafana registra Loki corretamente.
+
+**Para aplicar no cluster (primeira vez ou após recriar):**
 
 ```bash
-# 1. Deletar o ConfigMap antigo do chart (se existir):
-kubectl delete configmap loki-loki-stack -n monitoring --ignore-not-found
+# 1. Hard refresh do ArgoCD (propaga o novo label no loki-application.yaml):
+kubectl annotate application loki -n argocd argocd.argoproj.io/refresh=hard --overwrite
 
-# 2. Aplicar o novo ArgoCD Application que gerencia o nosso ConfigMap:
+# 2. Verificar que o ConfigMap do chart agora usa o label errado (invisível ao Grafana):
+kubectl get configmap loki-loki-stack -n monitoring -o yaml | grep -E "loki_ds_disabled|grafana_datasource"
+# Esperado: loki_ds_disabled: "1"  (e NÃO grafana_datasource: "1")
+
+# 3. Verificar que nosso ConfigMap existe com o label correto:
+kubectl get configmap loki-datasource -n monitoring -o yaml | grep -E "grafana_datasource|isDefault"
+# Esperado: grafana_datasource: "1"  e  isDefault: false
+
+# 4. Se o monitoring-config Application ainda não existir no ArgoCD:
 kubectl apply -f solidarytech-infra/gitops/argocd/monitoring-application.yaml
-
-# 3. Hard refresh do Loki para reprocessar com os novos helm.values:
-kubectl annotate application loki -n argocd argocd.argoproj.io/refresh=hard
-
-# 4. Verificar que o ConfigMap correto existe:
-kubectl get configmap -n monitoring loki-datasource -o yaml | grep isDefault
-# Esperado: isDefault: false
-
-kubectl get configmap -n monitoring loki-loki-stack 2>&1
-# Esperado: Error from server (NotFound) — não deve mais existir
 
 # 5. Reiniciar Grafana para recarregar datasources:
 kubectl rollout restart deployment prometheus-grafana -n monitoring
