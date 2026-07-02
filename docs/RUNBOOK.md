@@ -398,14 +398,26 @@ kubectl create secret generic donation-service-secret \
   --from-literal=AWS_REGION="us-east-1"
 
 # volunteer-service-secret
+# AWS Academy does not support IRSA — credentials must be injected explicitly.
+# Recreate this secret at every session with the current Academy credentials.
 kubectl create secret generic volunteer-service-secret \
   --namespace solidarytech \
   --from-literal=AWS_DYNAMODB_TABLE="solidarytech-volunteers" \
-  --from-literal=AWS_REGION="us-east-1"
+  --from-literal=AWS_REGION="us-east-1" \
+  --from-literal=AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}" \
+  --from-literal=AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}" \
+  --from-literal=AWS_SESSION_TOKEN="${AWS_SESSION_TOKEN}"
+
+# After recreating the secret, restart the deployment to pick up new credentials:
+# kubectl rollout restart deployment volunteer-service -n solidarytech
 
 # Verificar:
 kubectl get secrets -n solidarytech
 ```
+
+> **AVISO — volunteer-service:** O `AWS_SESSION_TOKEN` do AWS Academy expira em ~4h.
+> A cada nova sessão é necessário recriar o secret `volunteer-service-secret` com as
+> novas credenciais e executar `kubectl rollout restart deployment volunteer-service -n solidarytech`.
 
 ### 10.3 Aplicar ArgoCD Applications
 

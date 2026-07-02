@@ -29,6 +29,21 @@ spec:
                 secretKeyRef:
                   name: volunteer-service-secret
                   key: AWS_REGION
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: volunteer-service-secret
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: volunteer-service-secret
+                  key: AWS_SECRET_ACCESS_KEY
+            - name: AWS_SESSION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: volunteer-service-secret
+                  key: AWS_SESSION_TOKEN
             - name: OTEL_SERVICE_NAME
               value: "volunteer-service"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
