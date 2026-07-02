@@ -487,4 +487,80 @@ kubectl get secret argocd-initial-admin-secret -n argocd \
 
 ---
 
-_Seções adicionais serão acrescentadas conforme cada componente for criado (Etapas 5–9)._
+## 11. Observabilidade (Etapa 5) — Prometheus, Grafana, Loki, OpenTelemetry
+
+### Componentes
+
+| Componente | Tipo | Namespace | Acesso |
+|---|---|---|---|
+| kube-prometheus-stack | Helm chart via ArgoCD | monitoring | Grafana via LoadBalancer |
+| Loki + Promtail | Helm chart via ArgoCD | monitoring | Interno (via Grafana datasource) |
+| OpenTelemetry Collector | Manifests no repo via ArgoCD | monitoring | ClusterIP portas 4317/4318 |
+
+### 11.1 Criar secret do New Relic
+
+Obter a License Key em: **https://one.newrelic.com → API Keys → INGEST - LICENSE**
+
+```bash
+kubectl create namespace monitoring
+
+kubectl create secret generic new-relic-secret \
+  --namespace monitoring \
+  --from-literal=NEW_RELIC_LICENSE_KEY="<sua-license-key>"
+```
+
+### 11.2 Aplicar ArgoCD Applications
+
+```bash
+kubectl apply -f solidarytech-infra/gitops/argocd/prometheus-grafana-application.yaml
+kubectl apply -f solidarytech-infra/gitops/argocd/loki-application.yaml
+kubectl apply -f solidarytech-infra/gitops/argocd/otel-collector-application.yaml
+
+# Acompanhar sync:
+kubectl get applications -n argocd
+```
+
+### 11.3 Aguardar pods do monitoring ficarem Ready
+
+```bash
+# kube-prometheus-stack leva ~3-5 min:
+kubectl wait --for=condition=Ready pod --all -n monitoring --timeout=600s
+
+kubectl get pods -n monitoring
+```
+
+### 11.4 Acessar o Grafana
+
+```bash
+# Obter o External IP do LoadBalancer do Grafana:
+kubectl get svc -n monitoring | grep grafana
+
+# Acesse: http://<EXTERNAL-IP>
+# Usuário: admin
+# Senha:   SolidaryAdmin2024!
+```
+
+### 11.5 Configurar Loki como datasource no Grafana
+
+1. Grafana → **Configuration** → **Data Sources** → **Add data source** → **Loki**
+2. URL: `http://loki:3100`
+3. **Save & Test**
+
+### 11.6 Verificar traces chegando no New Relic
+
+```bash
+# Checar logs do collector para confirmar exportação:
+kubectl logs -n monitoring deployment/otel-collector | grep -i "export"
+```
+
+Acesse **https://one.newrelic.com → APM & Services** — os 3 serviços devem aparecer após as primeiras requisições.
+
+### 11.7 Verificar métricas do cluster no Grafana
+
+- Dashboard pré-instalado: **Kubernetes / Compute Resources / Cluster**
+- Dashboard pré-instalado: **Kubernetes / Compute Resources / Namespace (Pods)**
+- Importar dashboard Loki: ID **12019** (Loki & Promtail)
+
+---
+
+_Seções adicionais serão acrescentadas conforme cada componente for criado (Etapas 6–9)._
