@@ -561,6 +561,55 @@ Acesse **https://one.newrelic.com → APM & Services** — os 3 serviços devem 
 - Dashboard pré-instalado: **Kubernetes / Compute Resources / Namespace (Pods)**
 - Importar dashboard Loki: ID **12019** (Loki & Promtail)
 
+### 11.8 Troubleshooting — Prometheus StatefulSet não sobe
+
+**Sintoma:** `kubectl get statefulset -n monitoring` não mostra o Prometheus;
+`kubectl get prometheus -n monitoring` mostra coluna RECONCILED vazia.
+
+**Causa:** CRD `prometheuses.monitoring.coreos.com` com annotations grandes demais
+para etcd — ArgoCD usa client-side apply que falha no CRD do kube-prometheus-stack.
+
+**Solução:**
+
+```bash
+# 1. Aplicar o CRD via server-side apply (ignora limite de annotation):
+kubectl apply --server-side --force-conflicts \
+  -f https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/v0.71.0/example/prometheus-operator-crd/monitoring.coreos.com_prometheuses.yaml
+
+# 2. Reiniciar o operador para reconciliar:
+kubectl rollout restart deployment prometheus-grafana-kube-pr-operator -n monitoring
+
+# 3. Verificar reconciliação (aguardar RECONCILED = True):
+kubectl get prometheus -n monitoring
+```
+
+### 11.9 Troubleshooting — Grafana sem datasource / dashboards com "No data"
+
+**Sintoma:** dashboards mostram _"No data sources found"_ ou _"Datasource was not found"_;
+ou erro _"Only one datasource per organization can be marked as default"_ nos logs do Grafana.
+
+**Causa:** loki-stack criou um ConfigMap de datasource com `isDefault: true` que o sidecar
+do Grafana detectou, conflitando com o datasource do Prometheus (também `isDefault: true`).
+
+**Solução:**
+
+O loki-application.yaml já tem `grafana.sidecar.datasources.enabled=false` para prevenir
+este conflito. Se o erro ocorrer em um cluster onde o Loki foi aplicado sem esse parâmetro:
+
+```bash
+# 1. Deletar o ConfigMap de datasource que o loki-stack criou:
+kubectl delete configmap -n monitoring -l "grafana_datasource=1,app=loki-stack"
+
+# 2. Reiniciar o Grafana para recarregar os datasources:
+kubectl rollout restart deployment prometheus-grafana -n monitoring
+
+# 3. Verificar que o Prometheus é o único datasource default:
+#    Grafana UI → Configuration → Data Sources → confirmar ícone "default" apenas no Prometheus
+
+# 4. Adicionar Loki manualmente (se necessário):
+#    Grafana → Configuration → Data Sources → Add → Loki → URL: http://loki:3100
+```
+
 ---
 
 _Seções adicionais serão acrescentadas conforme cada componente for criado (Etapas 6–9)._

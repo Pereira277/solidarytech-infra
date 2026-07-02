@@ -15,6 +15,12 @@ spec:
           value: 'true'
         - name: grafana.enabled
           value: 'false'
+        # Prevent loki-stack from creating a datasource ConfigMap that the
+        # kube-prometheus-stack Grafana sidecar would pick up as isDefault:true,
+        # which conflicts with the Prometheus datasource already set as default.
+        # Add Loki datasource manually via Grafana UI (http://loki:3100).
+        - name: grafana.sidecar.datasources.enabled
+          value: 'false'
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: monitoring
