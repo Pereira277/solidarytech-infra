@@ -994,4 +994,68 @@ curl -s http://${NGO_IP}:8081/health
 
 ---
 
-_Seções adicionais serão acrescentadas conforme cada componente for criado (Etapas 6–9)._
+## 13. SRE — Etapa 6: Dashboard e Documento Formal
+
+### 13.1 Artefatos criados
+
+| Artefato | Localização | Finalidade |
+|---|---|---|
+| Documento SRE formal | `docs/SRE.md` | SLI/SLO/SLA do donation-service, Error Budget, MTTR |
+| Dashboard Grafana | `gitops/monitoring/sre-dashboard.yaml` | 7 painéis de Golden Metrics |
+| ArgoCD Application | `gitops/argocd/monitoring-application.yaml` | Gerencia tudo em `gitops/monitoring/` |
+
+### 13.2 Como Acessar o Dashboard SRE no Grafana
+
+```bash
+# 1. Obter o External IP do Grafana:
+kubectl get svc -n monitoring | grep grafana
+
+# 2. Acessar no browser:
+#    http://<EXTERNAL-IP>
+#    Usuário: admin | Senha: SolidaryAdmin2024!
+
+# 3. Navegar até o dashboard:
+#    Dashboards → Browse → "SolidaryTech — SRE Dashboard (donation-service)"
+#    OU usar a busca: Ctrl+K → "SRE"
+
+# 4. Verificar que o dashboard foi carregado pelo sidecar:
+kubectl get configmap sre-dashboard -n monitoring
+# Esperado: sre-dashboard   1      <algum tempo>
+
+kubectl get configmap sre-dashboard -n monitoring -o yaml | grep grafana_dashboard
+# Esperado: grafana_dashboard: "1"
+```
+
+### 13.3 Painéis do Dashboard SRE
+
+| # | Painel | Tipo | Query base | SLO |
+|---|---|---|---|---|
+| 1 | Disponibilidade (30d) | Stat | `(1 - rate(5xx) / rate(total)) * 100` | ≥ 99,5% → verde |
+| 2 | Error Budget Restante | Gauge | `(0.001 - error_rate) / 0.001 * 100` | < 25% → vermelho |
+| 3 | Latência P99 (5min) | Stat | `histogram_quantile(0.99, ...) * 1000` | > 500ms → vermelho |
+| 4 | Taxa de Erros 5xx (5min) | Stat | `rate(5xx) / rate(total) * 100` | > 0,1% → vermelho |
+| 5 | Latência P50/P95/P99 série | Timeseries | Histograma multiper­centil | Linha vermelha em 500ms |
+| 6 | Taxa de Erros 5xx série | Timeseries | `rate(5xx) / rate(total)` | Linha vermelha em 0,1% |
+| 7 | Throughput (req/s) | Timeseries | `rate(total)` por status | Volume total + 2xx + 5xx |
+
+### 13.4 Forçar re-sync do dashboard (se não aparecer no Grafana)
+
+```bash
+# O sidecar do Grafana detecta novos ConfigMaps com label grafana_dashboard="1"
+# automaticamente. Se o dashboard não aparecer em ~2 min:
+
+# Verificar que o monitoring-config Application está Synced:
+kubectl get application monitoring-config -n argocd
+
+# Se OutOfSync, forçar sync:
+kubectl annotate application monitoring-config -n argocd \
+  argocd.argoproj.io/refresh=hard --overwrite
+
+# Reiniciar o sidecar do Grafana para re-escanear ConfigMaps:
+kubectl rollout restart deployment prometheus-grafana -n monitoring
+kubectl rollout status deployment prometheus-grafana -n monitoring
+```
+
+---
+
+_Seções adicionais serão acrescentadas conforme cada componente for criado (Etapas 7–9)._
