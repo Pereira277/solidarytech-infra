@@ -163,8 +163,28 @@ terraform apply plan.out
 
 Execute ao final de cada sessão de estudo para economizar créditos AWS Academy.
 
+> **AVISO CRÍTICO — Load Balancer do Grafana:** O kube-prometheus-stack cria um AWS
+> Load Balancer (ELB/NLB) para o serviço `prometheus-grafana` no namespace `monitoring`.
+> O Terraform não gerencia esse recurso. Se não removido antes do `terraform destroy`,
+> o destroy travará na destruição da VPC com erro de dependência.
+
 ```bash
+# PASSO OBRIGATÓRIO antes do terraform destroy — remover LB do Grafana:
+kubectl delete svc prometheus-grafana -n monitoring --ignore-not-found
+
+# Aguardar o AWS remover o Load Balancer (~2 min):
+sleep 120
+
+# Confirmar que não há mais LBs pendentes ligados ao cluster (opcional):
+aws elbv2 describe-load-balancers --region us-east-1 \
+  --query 'LoadBalancers[*].[LoadBalancerName,State.Code]' --output table
+
+# Agora destruir a infra:
 cd solidarytech-infra/infra/terraform/
+
+# Passwords devem estar exportados para o destroy não pedir input:
+export TF_VAR_ngo_db_password="<mesma-senha-usada-no-apply>"
+export TF_VAR_donation_db_password="<mesma-senha-usada-no-apply>"
 
 terraform destroy
 # Confirmar com: yes
@@ -642,6 +662,312 @@ kubectl rollout restart deployment prometheus-grafana -n monitoring
 
 # 6. Verificar datasources no Grafana UI:
 #    Configuration → Data Sources → Prometheus (default) + Loki (não default)
+```
+
+---
+
+## 12. Retorno de Sessão — Subindo o Ambiente do Zero
+
+Procedimento completo para resubir o ambiente após `terraform destroy` ou expiração de sessão.
+Executar **na ordem exata**. Tempo estimado: 25–35 minutos até todos os pods Running.
+
+---
+
+### Passo 1 — Renovar credenciais AWS Academy
+
+1. Acesse [https://awsacademy.instructure.com](https://awsacademy.instructure.com) → seu curso → **Módulos** → **Learner Lab** → **Start Lab**
+2. Clique em **AWS Details** → **AWS CLI** → copie as três variáveis
+3. Cole no terminal:
+
+```bash
+export AWS_ACCESS_KEY_ID="ASIA..."
+export AWS_SECRET_ACCESS_KEY="..."
+export AWS_SESSION_TOKEN="..."
+
+# Verificar conta correta:
+aws sts get-caller-identity
+# Esperado: "Account": "354132155257"
+```
+
+---
+
+### Passo 2 — Atualizar Secrets do GitHub (pipelines CI/CD)
+
+Necessário para que as pipelines GitHub Actions consigam fazer push no ECR e atualizar o GitOps.
+
+Nos três repositórios (`solidarytech-ngo`, `solidarytech-donation`, `solidarytech-volunteer`):
+**Settings → Secrets and variables → Actions → atualizar os três secrets:**
+
+```
+AWS_ACCESS_KEY_ID      ← valor de $AWS_ACCESS_KEY_ID
+AWS_SECRET_ACCESS_KEY  ← valor de $AWS_SECRET_ACCESS_KEY
+AWS_SESSION_TOKEN      ← valor de $AWS_SESSION_TOKEN
+```
+
+> Dica: use a GitHub CLI para atualizar os 3 repos rapidamente:
+> ```bash
+> for REPO in solidarytech-ngo solidarytech-donation solidarytech-volunteer; do
+>   gh secret set AWS_ACCESS_KEY_ID     --body "$AWS_ACCESS_KEY_ID"     -R "Pereira277/$REPO"
+>   gh secret set AWS_SECRET_ACCESS_KEY --body "$AWS_SECRET_ACCESS_KEY" -R "Pereira277/$REPO"
+>   gh secret set AWS_SESSION_TOKEN     --body "$AWS_SESSION_TOKEN"     -R "Pereira277/$REPO"
+> done
+> ```
+
+---
+
+### Passo 3 — Exportar senhas e aplicar Terraform
+
+```bash
+# Definir senhas (nunca em arquivo):
+export TF_VAR_ngo_db_password="<senha-forte-sem-/@-espaco>"
+export TF_VAR_donation_db_password="<senha-forte-sem-/@-espaco>"
+
+cd ~/FIAP/Fase5/solidarytech-infra/infra/terraform/
+
+terraform init        # re-autentica backend S3 com as novas credenciais
+terraform plan -out=plan.out
+terraform apply plan.out
+
+# Salvar outputs como variáveis de ambiente (endpoints mudam a cada recreate):
+export NGO_DB_ENDPOINT=$(terraform output -raw ngo_db_endpoint)
+export DONATION_DB_ENDPOINT=$(terraform output -raw donation_db_endpoint)
+export SQS_QUEUE_URL=$(terraform output -raw sqs_queue_url)
+
+echo "NGO DB:      $NGO_DB_ENDPOINT"
+echo "Donation DB: $DONATION_DB_ENDPOINT"
+echo "SQS URL:     $SQS_QUEUE_URL"
+```
+
+---
+
+### Passo 4 — Configurar kubectl
+
+```bash
+aws eks update-kubeconfig \
+  --name solidarytech-cluster \
+  --region us-east-1
+
+kubectl get nodes
+# Esperado: 2 nodes em "Ready" (pode levar 2-3 min após o apply)
+```
+
+---
+
+### Passo 5 — Instalar ArgoCD
+
+```bash
+kubectl create namespace argocd
+
+kubectl apply -n argocd \
+  -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+# Aguardar pods ficarem Running (~2 min):
+kubectl wait --for=condition=Ready pod --all -n argocd --timeout=300s
+
+kubectl get pods -n argocd
+# Todos devem estar Running/Completed
+```
+
+---
+
+### Passo 6 — Criar namespaces e Secrets Kubernetes
+
+```bash
+# --- Namespace solidarytech ---
+kubectl apply -f ~/FIAP/Fase5/solidarytech-infra/gitops/namespace.yaml
+
+# --- Namespace monitoring ---
+kubectl create namespace monitoring
+
+# --- ngo-service-secret ---
+kubectl create secret generic ngo-service-secret \
+  --namespace solidarytech \
+  --from-literal=DATABASE_URL="postgresql://solidarytech:${TF_VAR_ngo_db_password}@${NGO_DB_ENDPOINT}/ngodb"
+
+# --- donation-service-secret ---
+kubectl create secret generic donation-service-secret \
+  --namespace solidarytech \
+  --from-literal=DATABASE_URL="postgresql://solidarytech:${TF_VAR_donation_db_password}@${DONATION_DB_ENDPOINT}/donationdb" \
+  --from-literal=AWS_SQS_URL="${SQS_QUEUE_URL}" \
+  --from-literal=AWS_REGION="us-east-1"
+
+# --- volunteer-service-secret (credenciais AWS Academy expiram em ~4h — recriar a cada sessão) ---
+kubectl create secret generic volunteer-service-secret \
+  --namespace solidarytech \
+  --from-literal=AWS_DYNAMODB_TABLE="solidarytech-volunteers" \
+  --from-literal=AWS_REGION="us-east-1" \
+  --from-literal=AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}" \
+  --from-literal=AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}" \
+  --from-literal=AWS_SESSION_TOKEN="${AWS_SESSION_TOKEN}"
+
+# --- new-relic-secret (License Key fixa — não expira com AWS Academy) ---
+kubectl create secret generic new-relic-secret \
+  --namespace monitoring \
+  --from-literal=NEW_RELIC_LICENSE_KEY="<sua-license-key-new-relic>"
+
+# Verificar todos os secrets:
+kubectl get secrets -n solidarytech
+kubectl get secrets -n monitoring
+```
+
+> **AVISO — volunteer-service:** O `AWS_SESSION_TOKEN` expira em ~4h com o AWS Academy.
+> A cada nova sessão recriar o secret e fazer restart do deployment:
+> ```bash
+> kubectl delete secret volunteer-service-secret -n solidarytech
+> kubectl create secret generic volunteer-service-secret --namespace solidarytech \
+>   --from-literal=AWS_DYNAMODB_TABLE="solidarytech-volunteers" \
+>   --from-literal=AWS_REGION="us-east-1" \
+>   --from-literal=AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}" \
+>   --from-literal=AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}" \
+>   --from-literal=AWS_SESSION_TOKEN="${AWS_SESSION_TOKEN}"
+> kubectl rollout restart deployment volunteer-service -n solidarytech
+> ```
+
+---
+
+### Passo 7 — Aplicar CRD do Prometheus via server-side (OBRIGATÓRIO)
+
+O CRD `prometheuses.monitoring.coreos.com` excede o limite de annotations do etcd.
+O apply client-side padrão do ArgoCD falha nesse CRD. Aplicar antes das Applications:
+
+```bash
+kubectl apply --server-side --force-conflicts \
+  -f https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/v0.71.0/example/prometheus-operator-crd/monitoring.coreos.com_prometheuses.yaml
+
+# Verificar que o CRD foi registrado:
+kubectl get crd prometheuses.monitoring.coreos.com
+```
+
+---
+
+### Passo 8 — Aplicar as 7 ArgoCD Applications
+
+```bash
+cd ~/FIAP/Fase5/solidarytech-infra
+
+# Microsserviços (namespace solidarytech):
+kubectl apply -f gitops/argocd/ngo-application.yaml
+kubectl apply -f gitops/argocd/donation-application.yaml
+kubectl apply -f gitops/argocd/volunteer-application.yaml
+
+# Observabilidade (namespace monitoring):
+kubectl apply -f gitops/argocd/prometheus-grafana-application.yaml
+kubectl apply -f gitops/argocd/loki-application.yaml
+kubectl apply -f gitops/argocd/otel-collector-application.yaml
+kubectl apply -f gitops/argocd/monitoring-application.yaml
+
+# Acompanhar sync (aguardar "Synced" e "Healthy" em todos):
+kubectl get applications -n argocd -w
+```
+
+> Tempo médio de sync: kube-prometheus-stack ~5 min, loki-stack ~3 min, demais <2 min.
+
+---
+
+### Passo 9 — Inicializar bancos de dados
+
+Executar apenas uma vez por ciclo de vida do RDS (após terraform apply).
+O RDS está em subnets privadas; os scripts rodam via pod temporário dentro do cluster.
+
+```bash
+# ngo-db — cria tabela ngos e insere seeds
+kubectl run psql-ngo --rm -i --restart=Never \
+  --namespace=solidarytech \
+  --image=postgres:17 \
+  --env="PGPASSWORD=${TF_VAR_ngo_db_password}" \
+  -- psql -h "$(echo $NGO_DB_ENDPOINT | cut -d: -f1)" \
+         -U solidarytech -d ngodb \
+         -c "$(cat ~/FIAP/Fase5/solidarytech-ngo/db/init.sql)"
+
+# donation-db — cria tabela donations
+kubectl run psql-donation --rm -i --restart=Never \
+  --namespace=solidarytech \
+  --image=postgres:17 \
+  --env="PGPASSWORD=${TF_VAR_donation_db_password}" \
+  -- psql -h "$(echo $DONATION_DB_ENDPOINT | cut -d: -f1)" \
+         -U solidarytech -d donationdb \
+         -c "$(cat ~/FIAP/Fase5/solidarytech-donation/db/init.sql)"
+
+# volunteer-service não tem init.sql — DynamoDB já criado pelo Terraform
+```
+
+---
+
+### Passo 10 — Reiniciar operador do Prometheus (se StatefulSet não subir)
+
+```bash
+# Verificar se o Prometheus StatefulSet existe:
+kubectl get statefulset -n monitoring
+kubectl get prometheus -n monitoring
+
+# Se a coluna RECONCILED estiver vazia, reiniciar o operador:
+kubectl rollout restart deployment \
+  prometheus-grafana-kube-pr-operator -n monitoring
+
+# Aguardar reconciliação (RECONCILED = True):
+kubectl get prometheus -n monitoring -w
+```
+
+---
+
+### Passo 11 — Validar datasource do Loki no Grafana
+
+```bash
+# Verificar que o ConfigMap do chart NÃO tem label grafana_datasource:
+kubectl get configmap loki-loki-stack -n monitoring -o yaml | \
+  grep -E "loki_ds_disabled|grafana_datasource"
+# Esperado: loki_ds_disabled: "1"  (não grafana_datasource)
+
+# Verificar que nosso ConfigMap existe com label e isDefault corretos:
+kubectl get configmap loki-datasource -n monitoring -o yaml | \
+  grep -E "grafana_datasource|isDefault"
+# Esperado: grafana_datasource: "1"  e  isDefault: false
+
+# Se necessário, reiniciar Grafana para recarregar datasources:
+kubectl rollout restart deployment prometheus-grafana -n monitoring
+```
+
+---
+
+### Passo 12 — Validar todos os pods
+
+```bash
+# Microsserviços:
+kubectl get pods -n solidarytech
+# Esperado: ngo-service, donation-service, volunteer-service → Running
+
+# Observabilidade:
+kubectl get pods -n monitoring
+# Esperado: prometheus-*, grafana-*, loki-*, promtail-*, alertmanager-*, otel-collector-* → Running
+
+# URL do Grafana:
+kubectl get svc -n monitoring | grep grafana
+# Copiar EXTERNAL-IP → http://<EXTERNAL-IP> | admin / SolidaryAdmin2024!
+
+# Teste rápido dos endpoints dos microsserviços:
+NGO_IP=$(kubectl get svc ngo-service -n solidarytech -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || \
+         kubectl get svc ngo-service -n solidarytech -o jsonpath='{.spec.clusterIP}')
+curl -s http://${NGO_IP}:8081/health
+# Esperado: {"status":"ok","service":"ngo-service"}
+```
+
+---
+
+### Resumo rápido (checklist de sessão)
+
+```
+[ ] 1. Exportar credenciais AWS Academy  (aws sts get-caller-identity → 354132155257)
+[ ] 2. Atualizar GitHub Secrets (3 repos)
+[ ] 3. export TF_VAR_ngo_db_password + TF_VAR_donation_db_password
+[ ] 4. terraform init && terraform apply  |  salvar outputs em $NGO_DB_ENDPOINT etc.
+[ ] 5. aws eks update-kubeconfig  |  kubectl get nodes → 2 Ready
+[ ] 6. kubectl create namespace argocd + instalar ArgoCD
+[ ] 7. Criar namespaces + 4 secrets (ngo, donation, volunteer, new-relic)
+[ ] 8. kubectl apply --server-side CRD prometheuses.monitoring.coreos.com
+[ ] 9. kubectl apply 7 ArgoCD Applications
+[ ] 10. Init SQL: ngo-db + donation-db via pod temporário
+[ ] 11. Verificar/reiniciar operador Prometheus se necessário
+[ ] 12. Validar pods solidarytech e monitoring
 ```
 
 ---
