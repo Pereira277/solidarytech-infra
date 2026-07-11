@@ -32,7 +32,7 @@ data:
               "color": {"mode": "thresholds"},
               "mappings": [],
               "max": 100,
-              "min": 95,
+              "min": 90,
               "thresholds": {
                 "mode": "absolute",
                 "steps": [
@@ -58,29 +58,30 @@ data:
           "targets": [
             {
               "datasource": {"type": "prometheus", "uid": "${datasource}"},
-              "expr": "(1 - sum(rate(http_requests_total{job=~\".*donation.*\",status=~\"5..\"}[30d])) / sum(rate(http_requests_total{job=~\".*donation.*\"}[30d]))) * 100",
+              "expr": "(count(kube_pod_status_ready{namespace=\"solidarytech\",condition=\"true\"}) / count(kube_pod_info{namespace=\"solidarytech\"})) * 100",
               "instant": true,
               "legendFormat": "Disponibilidade",
               "refId": "A"
             }
           ],
-          "title": "Disponibilidade (30d) — SLA: 99,5%",
+          "title": "Disponibilidade — Pods Ready (namespace solidarytech)",
           "type": "stat"
         },
         {
           "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "description": "Disponibilidade atual menos o SLA de 99,5%. Positivo = dentro do budget. Negativo = SLA violado.",
           "fieldConfig": {
             "defaults": {
               "color": {"mode": "thresholds"},
               "mappings": [],
-              "max": 100,
-              "min": 0,
+              "max": 1,
+              "min": -1,
               "thresholds": {
                 "mode": "absolute",
                 "steps": [
                   {"color": "red", "value": null},
-                  {"color": "yellow", "value": 25},
-                  {"color": "green", "value": 50}
+                  {"color": "yellow", "value": 0},
+                  {"color": "green", "value": 0.3}
                 ]
               },
               "unit": "percent"
@@ -100,30 +101,33 @@ data:
           "targets": [
             {
               "datasource": {"type": "prometheus", "uid": "${datasource}"},
-              "expr": "(0.001 - clamp_min(sum(rate(http_requests_total{job=~\".*donation.*\",status=~\"5..\"}[30d])) / sum(rate(http_requests_total{job=~\".*donation.*\"}[30d])), 0)) / 0.001 * 100",
+              "expr": "((count(kube_pod_status_ready{namespace=\"solidarytech\",condition=\"true\"}) / count(kube_pod_info{namespace=\"solidarytech\"})) * 100) - 99.5",
               "instant": true,
-              "legendFormat": "Error Budget",
+              "legendFormat": "Margem vs SLA",
               "refId": "A"
             }
           ],
-          "title": "Error Budget Restante (30d)",
+          "title": "Error Budget Proxy — Margem vs SLA 99,5% (pp)",
           "type": "gauge"
         },
         {
           "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "description": "Total de restarts de containers no namespace solidarytech nas últimas 24h. Valores altos indicam instabilidade.",
           "fieldConfig": {
             "defaults": {
               "color": {"mode": "thresholds"},
-              "mappings": [],
+              "mappings": [
+                {"options": {"0": {"index": 0, "text": "0 ✓"}}, "type": "value"}
+              ],
               "thresholds": {
                 "mode": "absolute",
                 "steps": [
                   {"color": "green", "value": null},
-                  {"color": "yellow", "value": 300},
-                  {"color": "red", "value": 500}
+                  {"color": "yellow", "value": 1},
+                  {"color": "red", "value": 5}
                 ]
               },
-              "unit": "ms"
+              "unit": "short"
             },
             "overrides": []
           },
@@ -140,17 +144,18 @@ data:
           "targets": [
             {
               "datasource": {"type": "prometheus", "uid": "${datasource}"},
-              "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{job=~\".*donation.*\"}[5m])) by (le)) * 1000",
+              "expr": "sum(increase(kube_pod_container_status_restarts_total{namespace=\"solidarytech\"}[24h]))",
               "instant": true,
-              "legendFormat": "P99",
+              "legendFormat": "Restarts",
               "refId": "A"
             }
           ],
-          "title": "Latência P99 (5min) — SLO: < 500ms",
+          "title": "Pod Restarts (24h) — namespace solidarytech",
           "type": "stat"
         },
         {
           "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "description": "CPU consumida pelo donation-service em millicores. Request: 100m, Limit: 500m.",
           "fieldConfig": {
             "defaults": {
               "color": {"mode": "thresholds"},
@@ -159,11 +164,11 @@ data:
                 "mode": "absolute",
                 "steps": [
                   {"color": "green", "value": null},
-                  {"color": "yellow", "value": 0.05},
-                  {"color": "red", "value": 0.1}
+                  {"color": "yellow", "value": 100},
+                  {"color": "red", "value": 400}
                 ]
               },
-              "unit": "percent"
+              "unit": "short"
             },
             "overrides": []
           },
@@ -180,24 +185,25 @@ data:
           "targets": [
             {
               "datasource": {"type": "prometheus", "uid": "${datasource}"},
-              "expr": "sum(rate(http_requests_total{job=~\".*donation.*\",status=~\"5..\"}[5m])) / sum(rate(http_requests_total{job=~\".*donation.*\"}[5m])) * 100",
+              "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"solidarytech\",pod=~\"donation-service.*\"}[5m])) * 1000",
               "instant": true,
-              "legendFormat": "Error Rate",
+              "legendFormat": "CPU (m)",
               "refId": "A"
             }
           ],
-          "title": "Taxa de Erros 5xx (5min) — SLO: < 0,1%",
+          "title": "CPU Usage — donation-service (millicores)",
           "type": "stat"
         },
         {
           "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "description": "CPU do donation-service ao longo do tempo. Linha amarela = request (100m), linha vermelha = limit (500m).",
           "fieldConfig": {
             "defaults": {
               "color": {"mode": "palette-classic"},
               "custom": {
                 "axisCenteredZero": false,
                 "axisColorMode": "text",
-                "axisLabel": "Latência (ms)",
+                "axisLabel": "millicores",
                 "axisPlacement": "auto",
                 "barAlignment": 0,
                 "drawStyle": "line",
@@ -211,16 +217,17 @@ data:
                 "showPoints": "never",
                 "spanNulls": false,
                 "stacking": {"group": "A", "mode": "none"},
-                "thresholdsStyle": {"mode": "line"}
+                "thresholdsStyle": {"mode": "line+area"}
               },
               "thresholds": {
                 "mode": "absolute",
                 "steps": [
                   {"color": "transparent", "value": null},
-                  {"color": "red", "value": 500}
+                  {"color": "yellow", "value": 100},
+                  {"color": "red", "value": 400}
                 ]
               },
-              "unit": "ms"
+              "unit": "short"
             },
             "overrides": []
           },
@@ -233,40 +240,29 @@ data:
           "targets": [
             {
               "datasource": {"type": "prometheus", "uid": "${datasource}"},
-              "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{job=~\".*donation.*\"}[5m])) by (le)) * 1000",
-              "legendFormat": "P99",
+              "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"solidarytech\",pod=~\"donation-service.*\"}[5m])) * 1000",
+              "legendFormat": "CPU atual (m)",
               "refId": "A"
-            },
-            {
-              "datasource": {"type": "prometheus", "uid": "${datasource}"},
-              "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=~\".*donation.*\"}[5m])) by (le)) * 1000",
-              "legendFormat": "P95",
-              "refId": "B"
-            },
-            {
-              "datasource": {"type": "prometheus", "uid": "${datasource}"},
-              "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{job=~\".*donation.*\"}[5m])) by (le)) * 1000",
-              "legendFormat": "P50 (mediana)",
-              "refId": "C"
             }
           ],
-          "title": "Latência POST /donations — P50 / P95 / P99 (linha vermelha = SLO 500ms)",
+          "title": "CPU — donation-service (millicores) | amarelo=request 100m | vermelho=limit 500m",
           "type": "timeseries"
         },
         {
           "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "description": "Memória do donation-service ao longo do tempo. Linha amarela = request (128Mi), linha vermelha = limit (256Mi).",
           "fieldConfig": {
             "defaults": {
               "color": {"mode": "palette-classic"},
               "custom": {
                 "axisCenteredZero": false,
                 "axisColorMode": "text",
-                "axisLabel": "Taxa de Erros (%)",
+                "axisLabel": "bytes",
                 "axisPlacement": "auto",
                 "barAlignment": 0,
                 "drawStyle": "line",
                 "fillOpacity": 15,
-                "gradientMode": "none",
+                "gradientMode": "opacity",
                 "hideFrom": {"legend": false, "tooltip": false, "viz": false},
                 "lineInterpolation": "linear",
                 "lineWidth": 2,
@@ -275,16 +271,17 @@ data:
                 "showPoints": "never",
                 "spanNulls": false,
                 "stacking": {"group": "A", "mode": "none"},
-                "thresholdsStyle": {"mode": "line"}
+                "thresholdsStyle": {"mode": "line+area"}
               },
               "thresholds": {
                 "mode": "absolute",
                 "steps": [
                   {"color": "transparent", "value": null},
-                  {"color": "red", "value": 0.1}
+                  {"color": "yellow", "value": 134217728},
+                  {"color": "red", "value": 240000000}
                 ]
               },
-              "unit": "percent"
+              "unit": "bytes"
             },
             "overrides": []
           },
@@ -297,34 +294,35 @@ data:
           "targets": [
             {
               "datasource": {"type": "prometheus", "uid": "${datasource}"},
-              "expr": "sum(rate(http_requests_total{job=~\".*donation.*\",status=~\"5..\"}[5m])) / sum(rate(http_requests_total{job=~\".*donation.*\"}[5m])) * 100",
-              "legendFormat": "Taxa de Erros 5xx (%)",
+              "expr": "sum(container_memory_working_set_bytes{namespace=\"solidarytech\",pod=~\"donation-service.*\"})",
+              "legendFormat": "Memória atual",
               "refId": "A"
             }
           ],
-          "title": "Taxa de Erros 5xx — donation-service (linha vermelha = SLO 0,1%)",
+          "title": "Memória — donation-service | amarelo=request 128Mi | vermelho=limit 256Mi",
           "type": "timeseries"
         },
         {
           "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "description": "Réplicas disponíveis por deployment no namespace solidarytech. Queda indica pod não-Ready.",
           "fieldConfig": {
             "defaults": {
               "color": {"mode": "palette-classic"},
               "custom": {
                 "axisCenteredZero": false,
                 "axisColorMode": "text",
-                "axisLabel": "req/s",
+                "axisLabel": "pods disponíveis",
                 "axisPlacement": "auto",
                 "barAlignment": 0,
                 "drawStyle": "line",
                 "fillOpacity": 20,
-                "gradientMode": "opacity",
+                "gradientMode": "none",
                 "hideFrom": {"legend": false, "tooltip": false, "viz": false},
-                "lineInterpolation": "smooth",
+                "lineInterpolation": "stepAfter",
                 "lineWidth": 2,
                 "pointSize": 5,
                 "scaleDistribution": {"type": "linear"},
-                "showPoints": "never",
+                "showPoints": "auto",
                 "spanNulls": false,
                 "stacking": {"group": "A", "mode": "none"},
                 "thresholdsStyle": {"mode": "off"}
@@ -333,37 +331,26 @@ data:
                 "mode": "absolute",
                 "steps": [{"color": "green", "value": null}]
               },
-              "unit": "reqps"
+              "unit": "short",
+              "min": 0
             },
             "overrides": []
           },
           "gridPos": {"h": 10, "w": 24, "x": 0, "y": 18},
           "id": 7,
           "options": {
-            "legend": {"calcs": ["mean", "max", "last"], "displayMode": "table", "placement": "bottom"},
+            "legend": {"calcs": ["min", "last"], "displayMode": "table", "placement": "bottom"},
             "tooltip": {"mode": "multi", "sort": "none"}
           },
           "targets": [
             {
               "datasource": {"type": "prometheus", "uid": "${datasource}"},
-              "expr": "sum(rate(http_requests_total{job=~\".*donation.*\"}[5m]))",
-              "legendFormat": "Total (req/s)",
+              "expr": "kube_deployment_status_replicas_available{namespace=\"solidarytech\"}",
+              "legendFormat": "{{deployment}}",
               "refId": "A"
-            },
-            {
-              "datasource": {"type": "prometheus", "uid": "${datasource}"},
-              "expr": "sum(rate(http_requests_total{job=~\".*donation.*\",status=~\"2..\"}[5m]))",
-              "legendFormat": "2xx — sucesso",
-              "refId": "B"
-            },
-            {
-              "datasource": {"type": "prometheus", "uid": "${datasource}"},
-              "expr": "sum(rate(http_requests_total{job=~\".*donation.*\",status=~\"5..\"}[5m]))",
-              "legendFormat": "5xx — erro",
-              "refId": "C"
             }
           ],
-          "title": "Throughput — donation-service (req/s)",
+          "title": "Pods Disponíveis por Deployment — namespace solidarytech",
           "type": "timeseries"
         }
       ],
@@ -390,5 +377,5 @@ data:
       "timezone": "browser",
       "title": "SolidaryTech — SRE Dashboard (donation-service)",
       "uid": "solidarytech-sre-v1",
-      "version": 1
+      "version": 2
     }

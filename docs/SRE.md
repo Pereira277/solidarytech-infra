@@ -88,6 +88,31 @@ sum(rate(http_requests_total{
 
 ---
 
+> **⚠️ Nota de instrumentação — onde as métricas de SLI realmente estão:**
+>
+> O `donation-service` (Go) **não expõe endpoint `/metrics`** nesta versão. As métricas HTTP
+> (`http_requests_total`, `http_request_duration_seconds`) não estão disponíveis no Prometheus.
+>
+> | Tipo de métrica | Onde está disponível | Como acessar |
+> |---|---|---|
+> | Latência HTTP (P99, P95, P50) | **New Relic APM** | APM → Services → donation-service → Latency |
+> | Taxa de erros 5xx | **New Relic APM** | APM → Services → donation-service → Errors |
+> | Error budget (30 dias) | **New Relic APM** | Custom dashboards via NRQL |
+> | Disponibilidade de pods | **Prometheus/Grafana** | `kube_pod_status_ready` — proxy de infraestrutura |
+> | Uso de CPU e memória | **Prometheus/Grafana** | `container_cpu_usage_seconds_total`, `container_memory_working_set_bytes` |
+> | Restarts de container | **Prometheus/Grafana** | `kube_pod_container_status_restarts_total` |
+>
+> **O Grafana SRE Dashboard** (`gitops/monitoring/sre-dashboard.yaml`) mostra métricas de
+> **infraestrutura** como proxy de disponibilidade: pods ready, CPU, memória e restarts.
+> Essas métricas são úteis para detectar instabilidade, mas **não substituem os SLIs formais**
+> de latência e taxa de erros HTTP, que devem ser consultados no **New Relic APM**.
+>
+> As queries PromQL das seções 2.1 e 2.2 representam a **definição formal dos SLIs** e ficarão
+> operacionais quando o `donation-service` for instrumentado com `prometheus/client_golang` ou
+> quando o OTel Collector for configurado com exporter `prometheusremotewrite`.
+
+---
+
 ## 3. SLOs — Service Level Objectives
 
 ### SLO 1 — Latência P99
