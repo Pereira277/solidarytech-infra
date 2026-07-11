@@ -180,18 +180,53 @@ aws elbv2 describe-load-balancers --region us-east-1 \
   --query 'LoadBalancers[*].[LoadBalancerName,State.Code]' --output table
 
 # Agora destruir a infra:
-cd solidarytech-infra/infra/terraform/
+cd ~/FIAP/Fase5/solidarytech-infra/infra/terraform/
 
 # Passwords devem estar exportados para o destroy não pedir input:
 export TF_VAR_ngo_db_password="<mesma-senha-usada-no-apply>"
 export TF_VAR_donation_db_password="<mesma-senha-usada-no-apply>"
 
-terraform destroy
-# Confirmar com: yes
+terraform destroy -auto-approve
 ```
 
 > **AVISO:** `terraform destroy` deve ser executado APENAS em `infra/terraform/`.
 > **NUNCA execute `terraform destroy` em `bootstrap-s3/` ou `bootstrap-ecr/`.**
+
+### Se o destroy travar — Security Groups e ENIs órfãos
+
+O `terraform destroy` pode travar na destruição da VPC se o EKS ou o ALB tiverem criado
+Security Groups e ENIs fora do controle do Terraform. Sinais: destroy parado em
+`aws_vpc.main` ou `aws_security_group` por mais de 10 minutos.
+
+```bash
+# 1. Identificar o VPC ID:
+VPC_ID=$(aws ec2 describe-vpcs --region us-east-1 \
+  --filters "Name=tag:Name,Values=solidarytech-vpc" \
+  --query 'Vpcs[0].VpcId' --output text)
+echo "VPC: $VPC_ID"
+
+# 2. Verificar ENIs (Elastic Network Interfaces) ainda presos ao VPC:
+aws ec2 describe-network-interfaces --region us-east-1 \
+  --filters "Name=vpc-id,Values=$VPC_ID" \
+  --query 'NetworkInterfaces[*].[NetworkInterfaceId,Status,Description,InterfaceType]' \
+  --output table
+
+# 3. Verificar Security Groups criados pelo EKS/ALB (fora do Terraform):
+aws ec2 describe-security-groups --region us-east-1 \
+  --filters "Name=vpc-id,Values=$VPC_ID" \
+  --query 'SecurityGroups[*].[GroupId,GroupName]' --output table
+# SGs com nome "eks-cluster-sg-*" ou "k8s-elb-*" são criados pelo EKS/ALB.
+
+# 4. Excluir SGs órfãos (substituir sg-XXXX pelos IDs listados acima;
+#    ignorar os que têm dependência — excluir as ENIs primeiro):
+# aws ec2 delete-security-group --group-id sg-XXXX --region us-east-1
+
+# 5. Se houver ENIs em estado "available" (não anexadas), excluir:
+# aws ec2 delete-network-interface --network-interface-id eni-XXXX --region us-east-1
+
+# 6. Após limpar os órfãos, retomar o destroy:
+terraform destroy -auto-approve
+```
 
 ---
 
@@ -353,19 +388,21 @@ kubectl get nodes
 
 ### Derrubar a infra (fim de sessão)
 
+> Remover o LB do Grafana ANTES do destroy (veja a seção 7 — Encerrar Sessão).
+
 ```bash
-cd solidarytech-infra/infra/terraform/
+cd ~/FIAP/Fase5/solidarytech-infra/infra/terraform/
 
 # Passwords devem estar exportados para o destroy não pedir input:
 export TF_VAR_ngo_db_password="<mesma-senha-usada-no-apply>"
 export TF_VAR_donation_db_password="<mesma-senha-usada-no-apply>"
 
-terraform destroy
-# Confirmar com: yes
+terraform destroy -auto-approve
 ```
 
 > **AVISO:** O bucket S3 do Velero (`solidarytech-velero-*`) em us-east-2 é destruído junto.
 > Isso é intencional — em ambiente Academy com créditos limitados, manter buckets ociosos gera custo.
+> Se o destroy travar na VPC, ver seção 7 — "Se o destroy travar — Security Groups e ENIs órfãos".
 
 ### Observações de IAM
 
@@ -405,16 +442,22 @@ kubectl get pods -n argocd
 # Namespace (declarativo — idempotente):
 kubectl apply -f solidarytech-infra/gitops/namespace.yaml
 
+# Pré-requisito: endpoints dinâmicos devem estar exportados.
+# Execute no diretório infra/terraform/ ANTES destes comandos:
+#   export NGO_DB_ENDPOINT=$(terraform output -raw ngo_db_endpoint)
+#   export DONATION_DB_ENDPOINT=$(terraform output -raw donation_db_endpoint)
+#   export SQS_QUEUE_URL=$(terraform output -raw sqs_queue_url)
+
 # ngo-service-secret
 kubectl create secret generic ngo-service-secret \
   --namespace solidarytech \
-  --from-literal=DATABASE_URL="postgresql://solidarytech:${TF_VAR_ngo_db_password}@solidarytech-ngo-db.csxznhqparxp.us-east-1.rds.amazonaws.com:5432/ngodb"
+  --from-literal=DATABASE_URL="postgresql://solidarytech:${TF_VAR_ngo_db_password}@${NGO_DB_ENDPOINT}/ngodb"
 
 # donation-service-secret
 kubectl create secret generic donation-service-secret \
   --namespace solidarytech \
-  --from-literal=DATABASE_URL="postgresql://solidarytech:${TF_VAR_donation_db_password}@solidarytech-donation-db.csxznhqparxp.us-east-1.rds.amazonaws.com:5432/donationdb" \
-  --from-literal=AWS_SQS_URL="https://sqs.us-east-1.amazonaws.com/354132155257/solidarytech-donation-events" \
+  --from-literal=DATABASE_URL="postgresql://solidarytech:${TF_VAR_donation_db_password}@${DONATION_DB_ENDPOINT}/donationdb" \
+  --from-literal=AWS_SQS_URL="${SQS_QUEUE_URL}" \
   --from-literal=AWS_REGION="us-east-1"
 
 # volunteer-service-secret
@@ -455,23 +498,28 @@ kubectl get applications -n argocd
 Executar os scripts `db/init.sql` a partir de um pod temporário com acesso à rede interna do cluster:
 
 ```bash
+# Pré-requisito: endpoints dinâmicos devem estar exportados.
+# Execute no diretório infra/terraform/ ANTES destes comandos:
+#   export NGO_DB_ENDPOINT=$(terraform output -raw ngo_db_endpoint)
+#   export DONATION_DB_ENDPOINT=$(terraform output -raw donation_db_endpoint)
+
 # ngo-db — cria tabela ngos e insere seeds
 kubectl run psql-ngo --rm -i --restart=Never \
   --namespace=solidarytech \
   --image=postgres:17 \
   --env="PGPASSWORD=${TF_VAR_ngo_db_password}" \
-  -- psql -h solidarytech-ngo-db.csxznhqparxp.us-east-1.rds.amazonaws.com \
+  -- psql -h "$(echo $NGO_DB_ENDPOINT | cut -d: -f1)" \
          -U solidarytech -d ngodb \
-         -c "$(cat solidarytech-ngo/db/init.sql)"
+         -c "$(cat ~/FIAP/Fase5/solidarytech-ngo/db/init.sql)"
 
 # donation-db — cria tabela donations
 kubectl run psql-donation --rm -i --restart=Never \
   --namespace=solidarytech \
   --image=postgres:17 \
   --env="PGPASSWORD=${TF_VAR_donation_db_password}" \
-  -- psql -h solidarytech-donation-db.csxznhqparxp.us-east-1.rds.amazonaws.com \
+  -- psql -h "$(echo $DONATION_DB_ENDPOINT | cut -d: -f1)" \
          -U solidarytech -d donationdb \
-         -c "$(cat solidarytech-donation/db/init.sql)"
+         -c "$(cat ~/FIAP/Fase5/solidarytech-donation/db/init.sql)"
 
 # volunteer-service — sem init.sql (DynamoDB já criado pelo Terraform)
 ```
@@ -712,6 +760,22 @@ AWS_SESSION_TOKEN      ← valor de $AWS_SESSION_TOKEN
 >   gh secret set AWS_SESSION_TOKEN     --body "$AWS_SESSION_TOKEN"     -R "Pereira277/$REPO"
 > done
 > ```
+
+> **Cenário: cluster ainda rodando (sessão de curta duração — sem terraform destroy)**
+> Se o cluster EKS está de pé e você só renovou as credenciais AWS Academy, o
+> `volunteer-service-secret` precisa ser recriado com o novo `AWS_SESSION_TOKEN`:
+> ```bash
+> kubectl delete secret volunteer-service-secret -n solidarytech
+> kubectl create secret generic volunteer-service-secret \
+>   --namespace solidarytech \
+>   --from-literal=AWS_DYNAMODB_TABLE="solidarytech-volunteers" \
+>   --from-literal=AWS_REGION="us-east-1" \
+>   --from-literal=AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}" \
+>   --from-literal=AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}" \
+>   --from-literal=AWS_SESSION_TOKEN="${AWS_SESSION_TOKEN}"
+> kubectl rollout restart deployment volunteer-service -n solidarytech
+> ```
+> Neste cenário, pular para os passos 4 (kubectl) e aplicar apenas o que for necessário.
 
 ---
 
@@ -1028,15 +1092,18 @@ kubectl get configmap sre-dashboard -n monitoring -o yaml | grep grafana_dashboa
 
 ### 13.3 Painéis do Dashboard SRE
 
-| # | Painel | Tipo | Query base | SLO |
+> **Nota:** O `donation-service` não expõe `/metrics`. Os painéis usam métricas de infraestrutura
+> do kube-state-metrics e cadvisor como proxy. Para SLIs de latência e erros HTTP, usar o **New Relic APM**.
+
+| # | Painel | Tipo | Query base | Limiar |
 |---|---|---|---|---|
-| 1 | Disponibilidade (30d) | Stat | `(1 - rate(5xx) / rate(total)) * 100` | ≥ 99,5% → verde |
-| 2 | Error Budget Restante | Gauge | `(0.001 - error_rate) / 0.001 * 100` | < 25% → vermelho |
-| 3 | Latência P99 (5min) | Stat | `histogram_quantile(0.99, ...) * 1000` | > 500ms → vermelho |
-| 4 | Taxa de Erros 5xx (5min) | Stat | `rate(5xx) / rate(total) * 100` | > 0,1% → vermelho |
-| 5 | Latência P50/P95/P99 série | Timeseries | Histograma multiper­centil | Linha vermelha em 500ms |
-| 6 | Taxa de Erros 5xx série | Timeseries | `rate(5xx) / rate(total)` | Linha vermelha em 0,1% |
-| 7 | Throughput (req/s) | Timeseries | `rate(total)` por status | Volume total + 2xx + 5xx |
+| 1 | Disponibilidade — Pods Ready | Stat | `(count(kube_pod_status_ready{ns="solidarytech",condition="true"}) / count(kube_pod_info{ns="solidarytech"})) * 100` | < 99% → vermelho |
+| 2 | Error Budget Proxy — Margem vs SLA 99,5% | Gauge | disponibilidade − 99.5 (em pp) | < 0 → vermelho (SLA violado) |
+| 3 | Pod Restarts (24h) | Stat | `sum(increase(kube_pod_container_status_restarts_total{ns="solidarytech"}[24h]))` | ≥ 1 → amarelo / ≥ 5 → vermelho |
+| 4 | CPU Usage — donation-service | Stat | `sum(rate(container_cpu_usage_seconds_total{pod=~"donation-service.*"}[5m])) * 1000` (millicores) | ≥ 100m → amarelo / ≥ 400m → vermelho |
+| 5 | CPU timeseries — donation-service | Timeseries | idem painel 4 | Linhas: request 100m (amarelo), limit 400m (vermelho) |
+| 6 | Memória timeseries — donation-service | Timeseries | `sum(container_memory_working_set_bytes{pod=~"donation-service.*"})` | Linhas: request 128Mi (amarelo), limit ~240Mi (vermelho) |
+| 7 | Pods Disponíveis por Deployment | Timeseries | `kube_deployment_status_replicas_available{ns="solidarytech"}` por `{{deployment}}` | Queda = pod não-Ready |
 
 ### 13.4 Forçar re-sync do dashboard (se não aparecer no Grafana)
 
