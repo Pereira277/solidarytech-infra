@@ -840,7 +840,24 @@ kubectl get crd prometheuses.monitoring.coreos.com
 
 ---
 
-### Passo 8 — Aplicar as 7 ArgoCD Applications
+### Passo 8 — Restart do operador do Prometheus (obrigatório após CRD)
+
+O operador é implantado pelo kube-prometheus-stack (passo seguinte). Se o cluster já tiver
+o operador rodando de uma sessão anterior, reiniciá-lo agora garante que ele reconhece o CRD
+recém-aplicado. Se o operador ainda não existir (primeira vez), repetir este passo após o
+Passo 9 quando o ArgoCD terminar de sincronizar o kube-prometheus-stack.
+
+```bash
+kubectl rollout restart deployment prometheus-grafana-kube-pr-operator -n monitoring
+kubectl rollout status deployment prometheus-grafana-kube-pr-operator -n monitoring
+sleep 60
+kubectl get prometheus -n monitoring
+# RECONCILED e AVAILABLE devem estar True antes de continuar
+```
+
+---
+
+### Passo 9 — Aplicar as 7 ArgoCD Applications
 
 ```bash
 cd ~/FIAP/Fase5/solidarytech-infra
@@ -861,10 +878,11 @@ kubectl get applications -n argocd -w
 ```
 
 > Tempo médio de sync: kube-prometheus-stack ~5 min, loki-stack ~3 min, demais <2 min.
+> Se este for o primeiro deploy (operador não existia no Passo 8), repetir o Passo 8 agora.
 
 ---
 
-### Passo 9 — Inicializar bancos de dados
+### Passo 10 — Inicializar bancos de dados
 
 Executar apenas uma vez por ciclo de vida do RDS (após terraform apply).
 O RDS está em subnets privadas; os scripts rodam via pod temporário dentro do cluster.
@@ -893,24 +911,27 @@ kubectl run psql-donation --rm -i --restart=Never \
 
 ---
 
-### Passo 10 — Reiniciar operador do Prometheus (se StatefulSet não subir)
+### Passo 11 — Confirmar reconciliação do Prometheus
 
 ```bash
-# Verificar se o Prometheus StatefulSet existe:
+# Verificar se o Prometheus StatefulSet existe e está Running:
 kubectl get statefulset -n monitoring
 kubectl get prometheus -n monitoring
+# Esperado: RECONCILED = True, AVAILABLE = True
 
-# Se a coluna RECONCILED estiver vazia, reiniciar o operador:
+# Se RECONCILED estiver vazio, reiniciar o operador novamente:
 kubectl rollout restart deployment \
   prometheus-grafana-kube-pr-operator -n monitoring
+kubectl rollout status deployment \
+  prometheus-grafana-kube-pr-operator -n monitoring
 
-# Aguardar reconciliação (RECONCILED = True):
+# Aguardar reconciliação:
 kubectl get prometheus -n monitoring -w
 ```
 
 ---
 
-### Passo 11 — Validar datasource do Loki no Grafana
+### Passo 12 — Validar datasource do Loki no Grafana
 
 ```bash
 # Verificar que o ConfigMap do chart NÃO tem label grafana_datasource:
@@ -929,7 +950,7 @@ kubectl rollout restart deployment prometheus-grafana -n monitoring
 
 ---
 
-### Passo 12 — Validar todos os pods
+### Passo 13 — Validar todos os pods
 
 ```bash
 # Microsserviços:
@@ -956,18 +977,19 @@ curl -s http://${NGO_IP}:8081/health
 ### Resumo rápido (checklist de sessão)
 
 ```
-[ ] 1. Exportar credenciais AWS Academy  (aws sts get-caller-identity → 354132155257)
-[ ] 2. Atualizar GitHub Secrets (3 repos)
-[ ] 3. export TF_VAR_ngo_db_password + TF_VAR_donation_db_password
-[ ] 4. terraform init && terraform apply  |  salvar outputs em $NGO_DB_ENDPOINT etc.
-[ ] 5. aws eks update-kubeconfig  |  kubectl get nodes → 2 Ready
-[ ] 6. kubectl create namespace argocd + instalar ArgoCD
-[ ] 7. Criar namespaces + 4 secrets (ngo, donation, volunteer, new-relic)
-[ ] 8. kubectl apply --server-side CRD prometheuses.monitoring.coreos.com
-[ ] 9. kubectl apply 7 ArgoCD Applications
-[ ] 10. Init SQL: ngo-db + donation-db via pod temporário
-[ ] 11. Verificar/reiniciar operador Prometheus se necessário
-[ ] 12. Validar pods solidarytech e monitoring
+[ ] 1.  Exportar credenciais AWS Academy  (aws sts get-caller-identity → 354132155257)
+[ ] 2.  Atualizar GitHub Secrets (3 repos)
+[ ] 3.  export TF_VAR_ngo_db_password + TF_VAR_donation_db_password
+[ ] 4.  terraform init && terraform apply  |  salvar outputs em $NGO_DB_ENDPOINT etc.
+[ ] 5.  aws eks update-kubeconfig  |  kubectl get nodes → 2 Ready
+[ ] 6.  kubectl create namespace argocd + instalar ArgoCD
+[ ] 7.  Criar namespaces + 4 secrets (ngo, donation, volunteer, new-relic)
+[ ] 8.  kubectl apply --server-side CRD prometheuses.monitoring.coreos.com
+[ ] 9.  Restart operador Prometheus (se já existir)  |  kubectl rollout restart + sleep 60
+[ ] 10. kubectl apply 7 ArgoCD Applications  |  repetir passo 9 se primeiro deploy
+[ ] 11. Init SQL: ngo-db + donation-db via pod temporário
+[ ] 12. Confirmar RECONCILED=True no Prometheus
+[ ] 13. Validar pods solidarytech e monitoring
 ```
 
 ---
