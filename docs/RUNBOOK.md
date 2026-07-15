@@ -1125,4 +1125,70 @@ kubectl rollout status deployment prometheus-grafana -n monitoring
 
 ---
 
-_Seções adicionais serão acrescentadas conforme cada componente for criado (Etapas 7–9)._
+## 14. FinOps — Etapa 7: Tags, Rightsizing e Forecast de Custos
+
+### 14.1 Artefatos criados
+
+| Artefato | Localização | Finalidade |
+|---|---|---|
+| Documento FinOps formal | `docs/FINOPS.md` | Estratégia de tagging, rightsizing, forecast de custos, recomendações |
+| Rightsizing dos deployments | `gitops/*/{ngo,donation,volunteer}-deployment.yaml` | `requests`/`limits` ajustados com base no consumo real observado no Grafana |
+
+### 14.2 Como verificar tags aplicadas nos recursos via AWS CLI
+
+```bash
+# EKS Cluster
+aws eks describe-cluster --name solidarytech-cluster --region us-east-1 \
+  --query 'cluster.tags'
+
+# RDS (ngo-db e donation-db) — describe-db-instances não retorna tags diretamente;
+# usar list-tags-for-resource com o ARN da instância:
+NGO_DB_ARN=$(aws rds describe-db-instances --region us-east-1 \
+  --db-instance-identifier solidarytech-ngo-db \
+  --query 'DBInstances[0].DBInstanceArn' --output text)
+aws rds list-tags-for-resource --resource-name "$NGO_DB_ARN" --region us-east-1
+
+# VPC
+VPC_ID=$(aws ec2 describe-vpcs --region us-east-1 \
+  --filters "Name=tag:Name,Values=solidarytech-vpc" \
+  --query 'Vpcs[0].VpcId' --output text)
+aws ec2 describe-tags --region us-east-1 \
+  --filters "Name=resource-id,Values=$VPC_ID"
+
+# SQS
+aws sqs list-queue-tags --region us-east-1 \
+  --queue-url "$(aws sqs get-queue-url --queue-name solidarytech-donation-events --region us-east-1 --query QueueUrl --output text)"
+
+# DynamoDB
+TABLE_ARN=$(aws dynamodb describe-table --table-name solidarytech-volunteers --region us-east-1 \
+  --query 'Table.TableArn' --output text)
+aws dynamodb list-tags-of-resource --resource-arn "$TABLE_ARN" --region us-east-1
+
+# S3 (Velero)
+aws s3api get-bucket-tagging --bucket solidarytech-velero-354132155257 --region us-east-2
+
+# ECR
+aws ecr list-tags-for-resource --region us-east-1 \
+  --resource-arn "$(aws ecr describe-repositories --repository-names solidarytech-donation --region us-east-1 --query 'repositories[0].repositoryArn' --output text)"
+```
+
+Todos os comandos acima devem retornar as 4 tags obrigatórias: `Project=SolidaryTech`,
+`Environment=production`, `Owner=lucas`, `CostCenter=NGO-Core`.
+
+### 14.3 Como consultar o Cost Explorer no console AWS
+
+1. Acesse o console AWS → busque **"Cost Explorer"** (ou **"Cost Management"**)
+2. **Cost Explorer** → **Launch Cost Explorer**
+3. Ajustar filtros:
+   - **Date range:** período da sessão ativa do AWS Academy
+   - **Group by:** `Tag` → selecionar `Project` (ou `CostCenter`) para ver o gasto agrupado pela SolidaryTech
+   - **Filter:** `Tag: Project = SolidaryTech` para isolar apenas os recursos do projeto
+4. Alternar a visualização entre **Daily** e **Monthly** para acompanhar a curva de gasto
+5. **Forecast** (aba lateral): requer histórico mínimo de dados de faturamento — no AWS
+   Academy, como o ambiente é recriado a cada sessão, o Forecast automático não é
+   confiável (ver nota metodológica em `docs/FINOPS.md`, seção 3.1). Usar o forecast
+   manual documentado no FINOPS.md como referência.
+
+---
+
+_Seções adicionais serão acrescentadas conforme cada componente for criado (Etapas 8–9)._
