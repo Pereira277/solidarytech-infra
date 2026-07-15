@@ -1191,4 +1191,125 @@ Todos os comandos acima devem retornar as 4 tags obrigatórias: `Project=Solidar
 
 ---
 
-_Seções adicionais serão acrescentadas conforme cada componente for criado (Etapas 8–9)._
+## 15. Disaster Recovery — Etapa 8: Velero
+
+### 15.1 Artefatos criados
+
+| Artefato | Localização | Finalidade |
+|---|---|---|
+| Documento PCN formal | `docs/PCN.md` | BIA, RPO/RTO, estratégia de DR, runbook de restore, testes |
+| ArgoCD Application (Velero) | `gitops/argocd/velero-application.yaml` | Instala o Helm chart `velero` 7.2.1 no namespace `velero` |
+| ArgoCD Application (Schedules) | `gitops/argocd/velero-resources-application.yaml` | Aplica os `Schedule` de `gitops/velero/` |
+| Backup Schedule — solidarytech | `gitops/velero/backup-schedule.yaml` | Backup a cada hora, TTL 72h |
+| Backup Schedule — monitoring | `gitops/velero/backup-schedule-monitoring.yaml` | Backup a cada 6h, TTL 48h |
+
+### 15.2 Pré-requisito — CLI do Velero (uma vez por máquina)
+
+```bash
+# macOS:
+brew install velero
+
+# Verificar instalação:
+velero version --client-only
+```
+
+### 15.3 Criar o secret velero-credentials
+
+O Velero autentica no S3 e nas APIs AWS via secret Kubernetes com as credenciais no
+formato de arquivo de credenciais AWS (`~/.aws/credentials`). No AWS Academy, o
+`AWS_SESSION_TOKEN` é obrigatório e deve ser incluído.
+
+```bash
+# Pré-requisito: credenciais AWS Academy exportadas (seção 4) e namespace velero existente
+# (criado automaticamente pelo ArgoCD via CreateNamespace=true, ou manualmente se necessário):
+kubectl create namespace velero --dry-run=client -o yaml | kubectl apply -f -
+
+# Gerar o arquivo de credenciais no formato esperado pelo plugin AWS:
+cat <<EOF > /tmp/velero-credentials
+[default]
+aws_access_key_id=${AWS_ACCESS_KEY_ID}
+aws_secret_access_key=${AWS_SECRET_ACCESS_KEY}
+aws_session_token=${AWS_SESSION_TOKEN}
+EOF
+
+kubectl create secret generic velero-credentials \
+  --namespace velero \
+  --from-file=cloud=/tmp/velero-credentials
+
+# Remover o arquivo temporário do disco:
+rm /tmp/velero-credentials
+
+# Verificar:
+kubectl get secret velero-credentials -n velero
+```
+
+> **AVISO:** assim como o `volunteer-service-secret`, o `velero-credentials` depende do
+> `AWS_SESSION_TOKEN` do AWS Academy, que expira em ~4h. Recriar o secret a cada nova
+> sessão e reiniciar o deployment do Velero:
+> ```bash
+> kubectl delete secret velero-credentials -n velero
+> # ...recriar com o bloco acima...
+> kubectl rollout restart deployment velero -n velero
+> ```
+
+### 15.4 Aplicar a velero-application (ArgoCD)
+
+```bash
+kubectl apply -f gitops/argocd/velero-application.yaml
+kubectl apply -f gitops/argocd/velero-resources-application.yaml
+
+# Acompanhar sync:
+kubectl get applications -n argocd | grep velero
+
+# Aguardar o pod do Velero ficar Running:
+kubectl get pods -n velero
+```
+
+> **Ordem importa:** aplicar `velero-application.yaml` primeiro. Os `Schedule` em
+> `velero-resources-application.yaml` dependem do CRD `schedules.velero.io`, instalado
+> pelo próprio chart do Velero.
+
+### 15.5 Verificar backups
+
+```bash
+# Listar backups (o primeiro backup do schedule só aparece após o próximo disparo do cron):
+velero backup get
+
+# Ver detalhes e status (Phase deve ser "Completed"):
+velero backup describe <backup-name> --details
+
+# Confirmar objetos no S3:
+aws s3 ls s3://solidarytech-velero-354132155257/backups/ --region us-east-1
+
+# Ver os Schedules ativos:
+kubectl get schedules -n velero
+```
+
+### 15.6 Forçar um backup manual (não esperar o cron)
+
+```bash
+velero backup create teste-manual --include-namespaces solidarytech
+velero backup describe teste-manual --details
+```
+
+### 15.7 Fazer restore
+
+```bash
+# Restaurar o namespace solidarytech a partir de um backup existente:
+velero restore create --from-backup <backup-name> --include-namespaces solidarytech
+
+# Acompanhar:
+velero restore get
+velero restore describe <restore-name> --details
+
+# Validar pods e secrets após o restore:
+kubectl get pods -n solidarytech
+kubectl get secrets -n solidarytech
+```
+
+Procedimento completo de restore, incluindo teste controlado de DR (backup manual →
+deleção deliberada → restore → validação), documentado em `docs/PCN.md`, seções 5 e 6.
+
+---
+
+_Seções adicionais serão acrescentadas conforme cada componente for criado (Etapa 9)._

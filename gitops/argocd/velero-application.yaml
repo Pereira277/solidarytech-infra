@@ -1,0 +1,53 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: velero
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: 'https://vmware-tanzu.github.io/helm-charts'
+    chart: velero
+    targetRevision: '7.2.1'
+    helm:
+      values: |
+        # AWS plugin required for S3 backup storage and EBS volume snapshot APIs.
+        initContainers:
+          - name: velero-plugin-for-aws
+            image: velero/velero-plugin-for-aws:v1.10.1
+            imagePullPolicy: IfNotPresent
+            volumeMounts:
+              - mountPath: /target
+                name: plugins
+
+        # AWS Academy does not support IRSA; static credentials are injected via secret.
+        credentials:
+          useSecret: true
+          existingSecret: velero-credentials
+
+        configuration:
+          backupStorageLocation:
+            - name: default
+              provider: aws
+              bucket: solidarytech-velero-354132155257
+              config:
+                region: us-east-1
+          volumeSnapshotLocation:
+            - name: default
+              provider: aws
+              config:
+                region: us-east-1
+
+        # EBS snapshots require IAM permissions not available to LabRole in AWS Academy.
+        # Backups are limited to Kubernetes manifests and PVC data via restic/kopia is disabled too (deployNodeAgent: false).
+        snapshotsEnabled: false
+        deployNodeAgent: false
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: velero
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

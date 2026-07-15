@@ -1,0 +1,13 @@
+# Hourly backup of the solidarytech namespace — meets the 1-hour RPO defined in docs/PCN.md.
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: solidarytech-hourly
+  namespace: velero
+spec:
+  schedule: "0 * * * *"
+  template:
+    includedNamespaces:
+      - solidarytech
+    storageLocation: default
+    ttl: 72h0m0s

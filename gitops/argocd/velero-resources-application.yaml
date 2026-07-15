@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: velero-resources
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: 'https://github.com/Pereira277/solidarytech-infra'
+    targetRevision: main
+    path: gitops/velero
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: velero
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
