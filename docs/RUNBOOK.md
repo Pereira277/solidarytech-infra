@@ -1252,6 +1252,18 @@ kubectl get secret velero-credentials -n velero
 > kubectl rollout restart deployment velero -n velero
 > ```
 
+**Comando validado no cluster** — forma direta com as 3 variáveis AWS Academy, equivalente
+ao bloco acima (usar uma ou outra, não as duas):
+
+```bash
+kubectl create secret generic velero-credentials \
+  --namespace velero \
+  --from-literal=cloud="[default]
+aws_access_key_id=${AWS_ACCESS_KEY_ID}
+aws_secret_access_key=${AWS_SECRET_ACCESS_KEY}
+aws_session_token=${AWS_SESSION_TOKEN}"
+```
+
 ### 15.4 Aplicar a velero-application (ArgoCD)
 
 ```bash
@@ -1268,6 +1280,18 @@ kubectl get pods -n velero
 > **Ordem importa:** aplicar `velero-application.yaml` primeiro. Os `Schedule` em
 > `velero-resources-application.yaml` dependem do CRD `schedules.velero.io`, instalado
 > pelo próprio chart do Velero.
+
+> **AVISO — ArgoCD pode não aplicar `upgradeCRDs: false`:** mesmo comportamento já visto
+> com o Loki (seção 11.9) — o ArgoCD por vezes não propaga corretamente um valor boolean
+> dentro de `helm.values` em um sync incremental, mantendo o job antigo com o initContainer
+> `bitnami/kubectl` (que falha por imagem inexistente). Se o pod do Velero ficar preso em
+> `Init:ErrImagePull` ou `Init:ImagePullBackOff`, deletar e recriar a Application força o
+> ArgoCD a reprocessar os values do zero:
+> ```bash
+> kubectl delete application velero -n argocd
+> kubectl apply -f gitops/argocd/velero-application.yaml
+> kubectl get pods -n velero -w
+> ```
 
 ### 15.5 Verificar backups
 
@@ -1309,6 +1333,49 @@ kubectl get secrets -n solidarytech
 
 Procedimento completo de restore, incluindo teste controlado de DR (backup manual →
 deleção deliberada → restore → validação), documentado em `docs/PCN.md`, seções 5 e 6.
+
+### 15.8 Validação confirmada no cluster (resultados reais)
+
+Etapa 8 validada de ponta a ponta no cluster `solidarytech-cluster`:
+
+| Item | Comando | Resultado confirmado |
+|---|---|---|
+| Backup location | `velero backup-location get` | `default` → **Available** (bucket `solidarytech-velero-354132155257`) |
+| Backup manual | `velero backup create solidarytech-backup-manual --include-namespaces solidarytech` | **Completed**, 0 erros |
+| Schedules | `velero schedule get` | `solidarytech-hourly` (`0 * * * *`) e `monitoring-6h` (`0 */6 * * *`) — ambos **Enabled** |
+| Restore de teste | `velero restore create solidarytech-restore-test --from-backup solidarytech-backup-manual --include-namespaces solidarytech --namespace-mappings solidarytech:solidarytech` | **Completed**, 0 erros, 3 pods restaurados |
+
+Comandos usados na validação:
+
+```bash
+# 1. Confirmar que o backup storage location está acessível:
+velero backup-location get
+# Esperado: NAME      PROVIDER   BUCKET/PREFIX                              PHASE
+#           default   aws        solidarytech-velero-354132155257           Available
+
+# 2. Criar backup manual para evidência (fora do schedule):
+velero backup create solidarytech-backup-manual --include-namespaces solidarytech
+velero backup describe solidarytech-backup-manual --details
+# Esperado: Phase: Completed | Errors: 0 | Warnings: 0
+
+# 3. Confirmar os 2 schedules ativos:
+velero schedule get
+# Esperado: solidarytech-hourly   0 * * * *     Enabled
+#           monitoring-6h         0 */6 * * *   Enabled
+
+# 4. Restore de teste — usar --namespace-mappings para remapear o namespace de destino
+#    quando se quer validar o restore sem sobrescrever o namespace solidarytech em produção:
+velero restore create solidarytech-restore-test \
+  --from-backup solidarytech-backup-manual \
+  --include-namespaces solidarytech \
+  --namespace-mappings solidarytech:solidarytech
+velero restore describe solidarytech-restore-test --details
+# Esperado: Phase: Completed | Errors: 0 | Warnings: 0 | 3 pods restaurados
+```
+
+Com isso, RPO de 1h e RTO de 4h (docs/PCN.md, seção 3) estão validados na prática:
+backup automático operacional, backup manual sob demanda funcional, e restore completo
+sem erros restaurando os 3 pods do namespace `solidarytech`.
 
 ---
 
