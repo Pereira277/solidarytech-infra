@@ -396,7 +396,8 @@ resource "aws_dynamodb_table" "volunteers" {
 # AWS Academy does not allow s3:CreateBucket in secondary regions via provider alias.
 
 resource "aws_s3_bucket" "velero" {
-  bucket = "${var.project}-velero-${data.aws_caller_identity.current.account_id}"
+  bucket        = "${var.project}-velero-${data.aws_caller_identity.current.account_id}"
+  force_destroy = true
 
   tags = merge(local.common_tags, {
     Name = "${var.project}-velero"
