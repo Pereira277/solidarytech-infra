@@ -42,6 +42,10 @@ spec:
         # Backups are limited to Kubernetes manifests and PVC data via restic/kopia is disabled too (deployNodeAgent: false).
         snapshotsEnabled: false
         deployNodeAgent: false
+
+        # CRDs are installed by the main chart at first sync; the upgrade-crds job's
+        # bitnami/kubectl image is unavailable and not needed here.
+        upgradeCRDs: false
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: velero
