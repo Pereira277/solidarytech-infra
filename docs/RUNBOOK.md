@@ -1379,4 +1379,11 @@ sem erros restaurando os 3 pods do namespace `solidarytech`.
 
 ---
 
-_Seções adicionais serão acrescentadas conforme cada componente for criado (Etapa 9)._
+## 16. ITSM/AIOps — Etapa 9
+
+Para configurar AIOps no New Relic, consultar `docs/ITSM.md` seção 2
+e `gitops/monitoring/newrelic-alert-policy.md`.
+
+---
+
+_Seções adicionais serão acrescentadas conforme cada componente for criado (Etapa 10)._
